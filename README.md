@@ -78,3 +78,7 @@ assets/textures  خرائط النتوءات للأسطح
 ## نسخة Unity
 
 لمستوى رسومي يقترب من ألعاب ستيم، يوجد كود كامل لمحرك Unity مع دليل إعداد خطوة بخطوة في [`unity/README.md`](unity/README.md).
+
+## نسخة Godot (الموصى بها)
+
+نسخة كاملة جاهزة للعب بمحرك Godot 4.7 بفيزياء سيارات وإضاءة حقيقية: افتح [`godot/project.godot`](godot/README.md) واضغط F5.
