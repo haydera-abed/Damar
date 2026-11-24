@@ -14,9 +14,18 @@ var sfx: Sfx
 var cars: Array[Car] = []
 var officers: Array = []
 
-# الحالة
-var cash := 0
-var bank := 0
+# الحالة — المال يعيش في EconomyManager (طبقة المنطق)؛ هذه خصائص تمرير فقط
+var cash: int:
+	get:
+		return EconomyManager.dirty_cash
+	set(v):
+		EconomyManager.add_dirty(v - EconomyManager.dirty_cash)
+var bank: int:
+	get:
+		return EconomyManager.bank_balance
+	set(v):
+		EconomyManager.add_bank(v - EconomyManager.bank_balance)
+var core_owned := false        # الحفظ الأساسي صار في طبقة المنطق (لا نقرأ القيم القديمة فوقه)
 var wanted := 0
 var last_seen := 0.0
 var crime_cd := 0.0
@@ -145,12 +154,15 @@ func _ready() -> void:
 		start_join(_arg(args, "--join"), int(_arg(args, "--port", str(Net.PORT))))
 	elif "--autotest" in args:
 		no_save = true
+		GameState.persistence = false
 		_autotest()
 	elif "--envshots" in OS.get_cmdline_user_args():
 		no_save = true
+		GameState.persistence = false
 		_envshots()
 	elif "--landshots" in OS.get_cmdline_user_args():
 		no_save = true
+		GameState.persistence = false
 		_landshots()
 
 
@@ -203,6 +215,8 @@ func start_join(ip: String, port := Net.PORT) -> void:
 
 ## إيقاف ما لا يناسب اللعب الجماعي: الشرطة الآلية (الشرطة لاعبون حقيقيون)
 func _go_online() -> void:
+	GameState.persistence = false          # في اللعب الجماعي الخادم يحفظ التقدم؛ لا نخلطه بالحفظ الفردي
+	core_owned = false                     # ملف اللاعب من الخادم يُطبَّق كاملاً
 	land.mp_apply(net.settle_owner, net.plot_tenant)
 	for c in _police():
 		_remove_car(c)
@@ -765,9 +779,10 @@ func try_bribe(amount: int) -> void:
 
 
 func _load() -> void:
+	core_owned = GameState.bridged
 	var cf := ConfigFile.new()
-	if cf.load(SAVE_PATH) == OK:
-		bank = cf.get_value("game", "bank", 0)
+	if cf.load(SAVE_PATH) == OK and not core_owned:
+		bank = cf.get_value("game", "bank", 0)   # ترحيل لمرة واحدة من الحفظ القديم
 	won_shown = bank >= Cfg.GOAL
 
 
@@ -775,12 +790,134 @@ func _load_extra() -> void:
 	var cf := ConfigFile.new()
 	if cf.load(SAVE_PATH) == OK and cf.has_section_key("game", "crime"):
 		_new_save = false
-		cash = cf.get_value("game", "cash", 0)
+		if not core_owned:
+			cash = cf.get_value("game", "cash", 0)
 		crime.from_dict(cf.get_value("game", "crime", {}))
 		weapons.from_dict(cf.get_value("game", "weapons", {}))
 		cop.from_dict(cf.get_value("game", "cop", {}))
 		land.from_dict(cf.get_value("game", "land", {}))
 		gangs.from_dict(cf.get_value("game", "gangs", {}))
+	_bridge_core()
+
+
+## ربط اللعبة بطبقة المنطق (Autoloads): الإشارات والخطافات
+func _bridge_core() -> void:
+	if not GameState.bridged:
+		GameState.bridged = true             # من الآن المال والمخزون يُحفظان في core_state.json
+		GameState.save_state()
+	core_owned = true
+	GameState.raids_enabled = gangs.season_mode
+	TravelManager.home_check = func() -> bool: return land.home.x >= 0
+	PrisonManager.extra_wealth = func() -> int: return crime.bag_value() + gangs.stash_value() + land.house.cargo.size() * House.CRATE_SELL
+	PrisonManager.imprisoning.connect(func(_r: String) -> void: gangs.best_season = maxi(gangs.best_season, bank))
+	PrisonManager.sentenced.connect(_on_sentenced)
+	TravelManager.travel_started.connect(_on_travel_started)
+	TravelManager.travel_finished.connect(_on_travel_finished)
+	TravelManager.travel_denied.connect(func(_h: int, why: String) -> void: hud.toast("🚫 " + why, Color("ff9b6b")))
+	MotelManager.roulette_result.connect(func(n: int, c: String, bet: int, pay: int) -> void:
+		hud.toast("🎰 %d %s — %s" % [n, {"red": "أحمر", "black": "أسود", "green": "أخضر"}[c], ("ربحت " + Cfg.money(pay)) if pay > 0 else ("خسرت " + Cfg.money(bet))], Color("7dff9e") if pay > 0 else Color("ff9b6b")))
+	MotelManager.quest_completed.connect(func(q: String, cash_r: int) -> void: hud.toast("✅ أنجزت مهمة اليوم (+%s)" % Cfg.money(cash_r), Color("7dff9e")))
+	MotelManager.barter_done.connect(func(_r: String, item: String, n: int) -> void: hud.toast("🚪 حصلت على %d × %s" % [n, ItemDB.item_name(item)], Color("ffd36b")))
+	MotelManager.barter_failed.connect(func(_r: String, why: String) -> void: hud.toast(why, Color("ff9b6b")))
+	MotelManager.motel_error.connect(func(why: String) -> void: hud.toast(why, Color("ff9b6b")))
+	MotelManager.shipment_delivered.connect(_on_shipment_delivered)
+	PrisonManager.authority_level_up.connect(func(l: int, rw: Array) -> void: hud.toast("👑 ارتفع نفوذك إلى %d — مكافآت دائمة: %s" % [l, ", ".join(rw)], Color("ffd36b")))
+	EconomyManager.laundered.connect(func(amount: int, offline: bool) -> void:
+		if offline and amount > 0:
+			hud.toast("🧼 غُسل %s أثناء غيابك" % Cfg.money(amount), Color("7dff9e")))
+
+
+## الشحنات تصل إلى المخزون؛ ما له شكل في العالم (الشحنات المغلقة، الذهب) ينتقل إلى الحقيبة
+func _on_shipment_delivered(id: String, _contents: Dictionary) -> void:
+	for i in GameState.item_count("cargo"):
+		crime.bag.append(land.house._crate_item())
+	GameState.remove_item("cargo", GameState.item_count("cargo"))
+	for i in GameState.item_count("gold_bar"):
+		crime.bag.append({"name": "سبيكة ذهب", "value": 12000, "kind": "gold"})
+	GameState.remove_item("gold_bar", GameState.item_count("gold_bar"))
+	hud.toast("📦 وصلت شحنتك (%s) إلى الموتيل" % id, Color("ffd36b"))
+
+
+## السجن الفيدرالي (استسلام أو مداهمة): مسح العالم ثم اختيار الولاية التالية
+func _on_sentenced(years: int, value: int, total: int, reason: String) -> void:
+	gangs.wipe_world()
+	if player.car:
+		_exit_car(true)
+	var items: Array = []
+	for sid in PrisonManager.available_states():
+		items.append({"text": "اهرب إلى %s" % StateFactory.STATE_NAMES.get(sid, sid), "enabled": true, "cb": _escape_to.bind(sid)})
+	var why := "استسلمت للفيدراليين" if reason == "surrender" else "المداهمة الفيدرالية"
+	hud.open_menu("⛓ السجن الفيدرالي", "%s: صودرت ثروتك (%s) وحُكم عليك بـ %d سنة.
+مجموع سنواتك: %d · النفوذ: %d (يبقى معك في كل ولاية)
+اختر الولاية التي تبدأ فيها من جديد:" % [
+		why, Cfg.money(value), years, total, PrisonManager.authority_level()], items)
+
+
+func _escape_to(state_id: String) -> void:
+	PrisonManager.escape(state_id)
+	GameState.raids_enabled = gangs.season_mode
+	crime.tools["lockpick"] = 3
+	cash = 2000
+	close_menu()
+	_respawn()
+	hud.toast("🔓 خرجت إلى %s — بداية جديدة، ونفوذك باقٍ" % StateFactory.STATE_NAMES.get(state_id, state_id), Color("ffd36b"))
+	save_game()
+
+
+func surrender_feds() -> void:
+	hud.open_menu("الاستسلام للفيدراليين", "ستُصادر كل ثروتك وممتلكاتك في هذه الولاية وتتحول إلى سنوات سجن (سنة + سنة لكل $250,000، حتى 40).
+السنوات ترفع نفوذك الدائم وتفتح مكافآت وشحنات حصرية.", [
+		{"text": "⛓ نعم، أستسلم", "enabled": not net.is_online(), "cb": func() -> void: PrisonManager.surrender_to_feds()},
+		{"text": "تراجع", "enabled": true, "cb": close_menu}])
+
+
+# ---------------------------------------------------------------- التنقل السريع (J)
+const TRAVEL_ICONS := {0: "🏠", 1: "💵", 2: "🛏", 3: "🏦"}
+
+
+func _hub_pos(hub: int) -> Vector3:
+	match hub:
+		TravelManager.Hub.HOME:
+			return land.base_pos()
+		TravelManager.Hub.SALES_CENTER:
+			return crime.fences[0] + Vector3(signf(-crime.fences[0].x) * 6.0, 0, 0)
+		TravelManager.Hub.MOTEL:
+			return city.safe_pos
+		_:
+			for s in city.stores:
+				if s.type == "bank":
+					return s.pos + Vector3(s.sx * 6.0, 0, 0)
+	return city.safe_pos
+
+
+func _nearest_hub() -> int:
+	var p := player_pos()
+	for h in [TravelManager.Hub.HOME, TravelManager.Hub.SALES_CENTER, TravelManager.Hub.MOTEL]:
+		if (h != TravelManager.Hub.HOME or land.home.x >= 0) and p.distance_to(_hub_pos(h)) < 40.0:
+			return h
+	return TravelManager.Hub.HEIST_CITY
+
+
+func open_travel() -> void:
+	TravelManager.current_hub = _nearest_hub() as TravelManager.Hub
+	var items: Array = []
+	for h in [TravelManager.Hub.HOME, TravelManager.Hub.SALES_CENTER, TravelManager.Hub.MOTEL, TravelManager.Hub.HEIST_CITY]:
+		var why: String = TravelManager.can_travel(h)
+		items.append({"text": "%s %s%s" % [TRAVEL_ICONS[h], TravelManager.HUB_NAMES[h], ("  — " + why) if why != "" else ""], "enabled": why == "", "cb": func() -> void:
+			close_menu()
+			TravelManager.travel_to(h)})
+	hud.open_menu("🚕 التنقل السريع", "أنت الآن قرب: %s · الرحلة ثانيتان · ممنوع وأنت مطلوب" % TravelManager.HUB_NAMES[TravelManager.current_hub], items)
+
+
+func _on_travel_started(_from: int, to_hub: int, _secs: float) -> void:
+	if player.car:
+		_exit_car(true)
+	hud.toast("🚕 في الطريق إلى %s…" % TravelManager.HUB_NAMES[to_hub], Color("9fd0ff"))
+
+
+func _on_travel_finished(hub: int) -> void:
+	player.teleport(_hub_pos(hub) + Vector3(0, 0.3, 0), cam.yaw)
+	hud.toast("وصلت إلى %s" % TravelManager.HUB_NAMES[hub], Color("9fd0ff"))
 
 
 ## مصابيح أمامية حقيقية ليلاً لأقرب السيارات إلى الكاميرا (مجموعة ثابتة من الأضواء لأداء ثابت)
@@ -806,6 +943,7 @@ func cycle_quality() -> void:
 
 func toggle_season() -> void:
 	gangs.season_mode = not gangs.season_mode
+	GameState.raids_enabled = gangs.season_mode
 	hud.refresh_settings()
 	save_game()
 
@@ -966,7 +1104,7 @@ func _interactions(dt: float) -> void:
 	var d_safe := (city.safe_pos - p).length()
 	if player.car == null:
 		if hint == "" and d_safe < 3.6:
-			hint = "موتيل Lenny — اضغط E (يحفظ نقودك فقط)" + ("  (عند Lenny: %s)" % Cfg.money(land.motel_cash) if land.motel_cash > 0 else "")
+			hint = "موتيل الصحراء — اضغط E (الخزنة، المقايضة، المهام، الشحنات، الروليت)" + ("  (في الخزنة: %s)" % Cfg.money(land.motel_cash) if land.motel_cash > 0 else "")
 			if Input.is_action_just_pressed("interact"):
 				land.open_motel()
 		var car := _nearest_car(3.8)
@@ -1120,6 +1258,8 @@ func _process(dt: float) -> void:
 		hud.toast("الصوت: مكتوم" if sfx.muted else "الصوت: تشغيل")
 	if Input.is_action_just_pressed("settle_map") and state == "play" and not hud.chat_edit.visible:
 		land.open_map()
+	if Input.is_action_just_pressed("quick_travel") and state == "play" and not hud.chat_edit.visible:
+		open_travel()
 	if Input.is_action_just_pressed("horn") and state == "play":
 		sfx.horn()
 
@@ -1320,6 +1460,7 @@ func _autotest() -> void:
 	await _frames(30)
 	print("AUTOTEST rental: rental=%s" % [extras.rental != null])
 	await _land_test(out)
+	await _core_bridge_test()
 	var flipped := 0
 	for car in cars:
 		if car.global_basis.y.y < 0.5:
@@ -1512,6 +1653,63 @@ func _land_test(out: String) -> void:
 	gangs.federal_raid()
 	await _frames(3)
 	print("AUTOTEST federal: home=%s docs=%d titles=%s research=%d motel=%d security=%s owner=%s bank=%d season=%s" % [land.home, land.docs, land.plot_titles, land.researched.size(), land.motel_cash, land.security, land.owner_text(hst), bank, gangs.season_mode])
+
+
+## اختبار ربط اللعبة بطبقة المنطق (Autoloads)
+func _core_bridge_test() -> void:
+	await _frames(3)
+	# المداهمة في اختبار الأراضي مرّت عبر PrisonManager
+	print("AUTOTEST prison: in_prison=%s years=%d authority=%d menu=%s state=%s" % [GameState.in_prison, int(GameState.profile.jail_years), PrisonManager.authority_level(), state, GameState.state])
+	_escape_to("sahel")
+	print("AUTOTEST escape: state=%s in_prison=%s cash=%d bank=%d tools=%s" % [GameState.state.id if GameState.state else "-", GameState.in_prison, cash, bank, crime.tools])
+	# المال: الخاصية في main تمرّر إلى EconomyManager
+	bank = 12345
+	cash = 777
+	print("AUTOTEST money-bridge: economy_bank=%d economy_cash=%d" % [EconomyManager.bank_balance, EconomyManager.dirty_cash])
+	# الغسيل بالوقت الحقيقي: كأن 10 دقائق مرت واللعبة مغلقة
+	crime.launder_pool = 100000.0
+	var b0 := bank
+	EconomyManager.desk_last_unix -= 600
+	var washed := EconomyManager.update_desk()
+	print("AUTOTEST offline-launder: washed=%d bank+%d rate=%.0f/s pool=%.0f" % [washed, bank - b0, crime.launder_rate(), crime.launder_pool])
+	crime.launder_pool = 0.0
+	# التنقل السريع
+	wanted = 0
+	GameState.set_wanted(0)
+	player.teleport(Vector3(0, 0.3, 0) + Vector3(Cfg.CELL / 2.0, 0, 3.0), 0.0)   # وسط المدينة
+	await _frames(2)
+	open_travel()
+	var hub_before: int = TravelManager.current_hub
+	close_menu()
+	var ok_t := TravelManager.travel_to(TravelManager.Hub.SALES_CENTER, true)
+	await _frames(2)
+	print("AUTOTEST travel: from=%s ok=%s at_sales=%s dist_fence=%.1f home_denied=%s" % [TravelManager.HUB_NAMES[hub_before], ok_t, TravelManager.current_hub == TravelManager.Hub.SALES_CENTER, player_pos().distance_to(crime.fences[0]), TravelManager.can_travel(TravelManager.Hub.HOME)])
+	TravelManager.travel_to(TravelManager.Hub.MOTEL, true)
+	await _frames(2)
+	# خدمات الموتيل عبر MotelManager
+	land.open_motel()
+	cash = 50000
+	crime.bag.append({"name": "مفتاح صندوق ودائع", "value": 0, "kind": "deposit_key"})
+	crime.bag.append({"name": "مفتاح صندوق ودائع", "value": 0, "kind": "deposit_key"})
+	land.open_barter()
+	MotelManager.barter("decoder")
+	var dec: int = crime.tools.get("decoder", 0)
+	land.open_roulette()
+	var c0 := cash
+	MotelManager.spin(1000, "red")
+	land.open_quests()
+	land.open_shipments()
+	MotelManager.order_shipment("tools")
+	MotelManager.check_deliveries(int(Time.get_unix_time_from_system()) + 400)
+	close_menu()
+	print("AUTOTEST motel: decoder_via_barter=%d roulette_delta=%d quests=%d drill=%d stash_bridge=%s" % [dec, cash - c0, MotelManager.active_quests.size(), crime.tools.get("drill", 0), str(land.motel_cash == MotelManager.stash_cash)])
+	# الاستسلام للفيدراليين من الإعدادات
+	bank = 900000
+	surrender_feds()
+	PrisonManager.surrender_to_feds()
+	await _frames(2)
+	print("AUTOTEST surrender: in_prison=%s years=%d authority=%d rewards=%s menu=%s" % [GameState.in_prison, int(GameState.profile.jail_years), PrisonManager.authority_level(), GameState.profile.rewards, state])
+	_escape_to("jabal")
 
 
 ## اختبار المنزل: مخطط البناء، الترقية، الأثاث، الغسيل، الشحنات، الزراعة، المختبر، المرآب

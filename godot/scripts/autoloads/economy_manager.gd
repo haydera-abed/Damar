@@ -17,6 +17,10 @@ var desk_pool := 0.0         # كاش قذر موضوع على طاولة الغ
 var desk_last_unix := 0
 var desk_bonus := 0.0        # عدّادات النقود وغيرها (+0.15…)
 var fence_bonus := 0.0
+## ربط اللعبة ثلاثية الأبعاد: معدّل غسيل خارجي ($/ث) يحسبه نظام المنزل/الأحياء، ودالة ضريبة خارجية.
+## يُحفظ المعدّل ليُستخدم في حساب الغسيل أثناء الإغلاق.
+var rate_override_per_sec: float = -1.0
+var tax_hook: Callable = Callable()
 
 var _tick := 0.0
 
@@ -44,6 +48,14 @@ func add_bank(amount: int) -> void:
 	bank_changed.emit(bank_balance)
 
 
+## تعيين مباشر لمحتوى الطاولة (للربط): يُحسب ما غُسل حتى الآن أولاً حتى لا يُحتسب وقت قديم
+func set_desk_pool(v: float) -> void:
+	update_desk()
+	desk_pool = maxf(0.0, v)
+	desk_last_unix = int(Time.get_unix_time_from_system())
+	_emit_desk()
+
+
 ## يدفع من الكاش القذر أولاً ثم من البنك (إن سُمح)
 func spend(amount: int, allow_bank := true) -> bool:
 	if amount <= 0:
@@ -61,6 +73,8 @@ func spend(amount: int, allow_bank := true) -> bool:
 
 # ---------------------------------------------------------------- طاولة الغسيل
 func desk_rate() -> float:
+	if rate_override_per_sec >= 0.0:
+		return rate_override_per_sec * 3600.0
 	return Balance.DESK_RATE_PER_HOUR * (1.0 + desk_bonus)
 
 
@@ -101,7 +115,7 @@ func update_desk(now := -1) -> int:
 		return 0
 	var amount := minf(desk_pool, desk_rate() * elapsed / 3600.0)
 	desk_pool -= amount
-	var tax := LandManager.settlement_tax(amount)
+	var tax: float = float(tax_hook.call(amount)) if tax_hook.is_valid() else LandManager.settlement_tax(amount)
 	add_bank(int(round(amount - tax)))
 	if tax > 0.0:
 		tax_paid.emit(LandManager.home_settlement_id(), int(tax))
@@ -172,7 +186,7 @@ func reset_state() -> void:
 
 
 func to_state_dict() -> Dictionary:
-	return {"dirty": dirty_cash, "bank": bank_balance, "desk": desk_pool, "desk_t": desk_last_unix, "bonus": desk_bonus}
+	return {"dirty": dirty_cash, "bank": bank_balance, "desk": desk_pool, "desk_t": desk_last_unix, "bonus": desk_bonus, "rate": rate_override_per_sec}
 
 
 func from_state_dict(d: Dictionary) -> void:
@@ -181,3 +195,4 @@ func from_state_dict(d: Dictionary) -> void:
 	desk_pool = float(d.get("desk", 0.0))
 	desk_last_unix = int(d.get("desk_t", 0))
 	desk_bonus = float(d.get("bonus", 0.0))
+	rate_override_per_sec = float(d.get("rate", -1.0))

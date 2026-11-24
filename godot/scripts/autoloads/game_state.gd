@@ -24,7 +24,10 @@ var inventory := {}                    # item_id -> عدد (خاص بالولا�
 var wanted := 0
 var in_prison := false
 var profile := {"jail_years": 0, "sentences": 0, "authority": 0, "rewards": [], "visited_states": []}
-var persistence := true                # الاختبارات تعطّل الكتابة على القرص
+var persistence := true                # الاختبارات واللعب الجماعي تعطّل الكتابة على القرص
+var bridged := false                   # اللعبة ثلاثية الأبعاد نقلت حفظها القديم إلى هنا (يُكتب مرة واحدة)
+var loaded_from_disk := false
+var raids_enabled := true              # المداهمة الأسبوعية (تتبع إعداد اللعبة)
 var state_path := STATE_PATH
 var profile_path := PROFILE_PATH
 
@@ -52,7 +55,7 @@ func _process(dt: float) -> void:
 		_autosave = 30.0
 		save_state()                    # حفظ دوري (يشمل كل الوحدات المسجّلة)
 	_raid_check -= dt
-	if _raid_check <= 0.0 and state != null and not in_prison:
+	if _raid_check <= 0.0 and state != null and not in_prison and raids_enabled:
 		_raid_check = 5.0
 		if seconds_until_wipe() <= 0:
 			federal_raid_due.emit()
@@ -141,7 +144,7 @@ func save_state() -> void:
 	var mods := {}
 	for k in _modules:
 		mods[k] = _modules[k].to_state_dict()
-	var data := {"v": 1, "state": state.to_dict(), "inventory": inventory, "wanted": wanted, "modules": mods}
+	var data := {"v": 1, "state": state.to_dict(), "inventory": inventory, "wanted": wanted, "modules": mods, "bridged": bridged}
 	var f := FileAccess.open(state_path, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(data))
@@ -158,6 +161,8 @@ func _load_state() -> bool:
 	for k in inventory.keys():
 		inventory[k] = int(inventory[k])
 	wanted = int(data.get("wanted", 0))
+	bridged = bool(data.get("bridged", false))
+	loaded_from_disk = true
 	_pending = data.get("modules", {})
 	for k in _modules.keys():
 		register_module(k, _modules[k])

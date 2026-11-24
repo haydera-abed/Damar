@@ -115,7 +115,25 @@ godot --headless --path godot res://scenes/tests/core_persist.tscn -- --core-per
 godot --headless --path godot res://scenes/tests/core_persist.tscn -- --core-persist-test --phase=2
 ```
 
-## الحالة الحالية (بصراحة)
-- هذه الطبقة تعمل وتُختبر مستقلة، لكن **اللعبة ثلاثية الأبعاد الحالية ما زالت تستخدم أنظمتها القديمة**
-  (`scripts/land.gd` و`house.gd` و`gangs.gd`…). ربطها بهذه الطبقة (نقل الاقتصاد والأراضي والسجن إليها) خطوة تالية.
-- اللعب الجماعي لا يستخدم هذه الطبقة بعد (الخادم في `scripts/net.gd`).
+## الربط باللعبة ثلاثية الأبعاد
+| في اللعبة | أين تعيش البيانات الآن |
+|---|---|
+| `main.cash` / `main.bank` | خصائص تمرير إلى `EconomyManager.dirty_cash` / `bank_balance` |
+| `crime.launder_pool` (طاولة الغسيل في المنزل) | `EconomyManager.desk_pool` — يُغسل بالوقت الحقيقي حتى واللعبة مغلقة؛ المعدّل (`rate_override_per_sec`) والضريبة (`tax_hook`) يزوّدهما نظام المنزل/الأحياء |
+| `crime.tools` (الأدوات، أجهزة فك التشفير) | `GameState.inventory` |
+| `land.docs` (المستندات) | `GameState.inventory["document"]` |
+| `land.motel_cash` (خزنة الموتيل) | `MotelManager.stash_cash` |
+| المداهمة الفيدرالية / الاستسلام (الإعدادات) | `PrisonManager.imprison` → `sentenced` → مسح العالم + قائمة اختيار الولاية → `escape()` |
+| قائمة الموتيل | المقايضة والمهام اليومية والشحنات والروليت عبر `MotelManager` |
+| التنقل السريع (مفتاح J) | `TravelManager` + نقل اللاعب إلى المنزل/المشتري/الموتيل/وسط المدينة |
+| القناع (X) | `HeistCityManager.set_masked` |
+| السرقات والبيع | تقدم المهام اليومية (`MotelManager.report`) |
+
+- **الترحيل:** أول تشغيل بعد التحديث ينقل المال والأدوات والمستندات وخزنة الموتيل من `damar_save.cfg` مرة واحدة
+  (`GameState.bridged`)، وبعدها المصدر هو `core_state.json`.
+- **اللعب الجماعي:** تُعطَّل كتابة حفظ طبقة المنطق (`GameState.persistence = false`) ويُطبَّق ملف اللاعب من الخادم.
+
+## ما لم يُربط بعد (بصراحة)
+- مستوطنات اللعبة وقطعها ومنزلها (`land.gd`/`house.gd`) ما زالت نموذجها الخاص؛ `LandManager` يُستخدم في الاختبارات المنطقية فقط.
+- مدينة السطو المنطقية (`HeistCityManager`) لا تقابلها مبانٍ ثلاثية الأبعاد بعد؛ السرقات في المدينة تمر عبر `crime.gd`.
+- اللعب الجماعي لا يرسل بيانات طبقة المنطق عبر الشبكة.

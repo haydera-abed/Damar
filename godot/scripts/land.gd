@@ -31,7 +31,13 @@ const NPC_NAMES := ["أبو خليل", "سامر", "نور", "رامي", "ليل
 
 var game: Node
 var settlements: Array = []      # {name, district, level, center, owner(-1 بلا مالك، 0 أنت، 1..3 عصابة)، owner_name, plots, tax_box, label}
-var docs := 0
+## المستندات وخزنة الموتيل تعيش في طبقة المنطق (GameState / MotelManager)
+var docs: int:
+	get:
+		return GameState.item_count("document")
+	set(v):
+		GameState.inventory["document"] = maxi(0, v)
+		GameState.inventory_changed.emit("document", maxi(0, v))
 var plot_titles := [0, 0, 0, 0]  # حسب المستوى
 var settle_titles := [0, 0, 0, 0]
 var home := Vector2i(-1, -1)     # (المستوطنة، القطعة)
@@ -43,7 +49,12 @@ var house: House
 var _bushes_spawned := false
 var pickups: Array = []          # شتلات في الحدائق وشحنات سقطت على الأرض: {pos, node, kind, item, t}
 var researched := {}             # "plot1"، "settle2"… → true
-var motel_cash := 0              # نقود محفوظة عند Lenny في الموتيل (آمنة من المصادرة)
+var motel_cash: int:
+	get:
+		return MotelManager.stash_cash
+	set(v):
+		MotelManager.stash_cash = maxi(0, v)
+		MotelManager.stash_changed.emit(MotelManager.stash_cash)
 var eviction_rights := 0
 var waypoint := Vector3.INF      # مسار نحو لافتة قطعة اخترتها من خريطة المستوطنة
 var _beacon: MeshInstance3D
@@ -561,24 +572,98 @@ func _leave_plot() -> void:
 	game.hud.close_menu()
 
 
-## موتيل Lenny: نقطة البداية. يحفظ النقود فقط؛ الغنائم وطاولة الغسيل تحتاج منزلاً على قطعة أرض
+## موتيل الصحراء (صاحبه «رفيق»): نقطة البداية. يحفظ النقود فقط؛ الغنائم وطاولة الغسيل تحتاج منزلاً.
+## خدمات الموتيل الأخرى يديرها MotelManager (طبقة المنطق): المقايضة، المهام اليومية، الشحنات، الروليت.
 func open_motel() -> void:
+	TravelManager.current_hub = TravelManager.Hub.MOTEL
 	var items: Array = [
-		{"text": "اترك نقودك عند Lenny (%s) — لا تُصادر عند القبض عليك" % Cfg.money(game.cash), "enabled": game.cash > 0 and game.wanted == 0, "cb": _motel_deposit},
+		{"text": "اترك نقودك عند رفيق (%s) — لا تُصادر عند القبض عليك" % Cfg.money(game.cash), "enabled": game.cash > 0 and game.wanted == 0, "cb": _motel_deposit},
 		{"text": "خذ نقودك (%s)" % Cfg.money(motel_cash), "enabled": motel_cash > 0, "cb": _motel_take},
-		{"text": "اغسل عند Lenny بنصف القيمة: %s ← %s في البنك (حتى $100,000)" % [Cfg.money(mini(game.cash, 100000)), Cfg.money(mini(game.cash, 100000) / 2)], "enabled": game.cash > 0 and game.wanted == 0, "cb": _motel_launder},
+		{"text": "🚪 الباب المريب (مقايضة)", "enabled": true, "cb": open_barter},
+		{"text": "📋 مهام اليوم", "enabled": true, "cb": open_quests},
+		{"text": "📦 الشحنات", "enabled": true, "cb": open_shipments},
+		{"text": "🎰 طاولة الروليت (حد الرهان %s)" % Cfg.money(MotelManager.bet_cap()), "enabled": true, "cb": open_roulette},
+		{"text": "اغسل عند رفيق بنصف القيمة: %s ← %s في البنك (حتى $100,000)" % [Cfg.money(mini(game.cash, 100000)), Cfg.money(mini(game.cash, 100000) / 2)], "enabled": game.cash > 0 and game.wanted == 0, "cb": _motel_launder},
 	]
 	var sub := "محفوظ هنا: %s\nالموتيل يحفظ النقود فقط. لتخزين الغنائم وغسل الأموال تحتاج منزلاً على قطعة أرض:\nابحث عن الوثيقة في السوق السوداء، اشترِها، ثم استأجر قطعة من مستوطنة (L لخريطة المستوطنة)." % Cfg.money(motel_cash)
 	if home.x >= 0:
 		sub += "\n🏠 منزلك في %s" % settlements[home.x].name
-	game.hud.open_menu("موتيل Lenny", sub, items)
+	game.hud.open_menu("موتيل رفيق", sub, items)
+
+
+## المقايضة: مفاتيح الودائع وسبائك الذهب في الحقيبة تنتقل إلى المخزون لتُستخدم في الوصفات
+func open_barter() -> void:
+	var cr: Crime = game.crime
+	for it in cr.bag.duplicate():
+		if it.kind == "deposit_key" or it.kind == "gold":
+			cr.bag.erase(it)
+			GameState.add_item("deposit_key" if it.kind == "deposit_key" else "gold_bar")
+	var items: Array = []
+	for r in MotelManager.recipes:
+		var parts := []
+		for k in r.inputs:
+			parts.append("%d %s (معك %d)" % [int(r.inputs[k]), ItemDB.item_name(k), GameState.item_count(k)])
+		var locked: bool = r.required_authority > PrisonManager.authority_level()
+		items.append({"text": "%s ⇐ %s%s%s" % [r.title, " + ".join(parts), (" + " + Cfg.money(r.cash_cost)) if r.cash_cost > 0 else "", ("  🔒 نفوذ %d" % r.required_authority) if locked else ""],
+			"enabled": not locked and GameState.has_items(r.inputs) and game.cash + game.bank >= r.cash_cost, "cb": func() -> void:
+				MotelManager.barter(r.id)
+				open_barter()})
+	items.append({"text": "↩ رجوع", "enabled": true, "cb": open_motel})
+	game.hud.open_menu("🚪 الباب المريب", "يقايضك %s على عناصر نادرة. النفوذ يفتح وصفات أكثر (نفوذك: %d)." % [MotelManager.OWNER_NAME, PrisonManager.authority_level()], items)
+
+
+func open_quests() -> void:
+	MotelManager.refresh_daily()
+	var items: Array = []
+	for qid in MotelManager.active_quests:
+		var q: QuestData = MotelManager._quest(qid)
+		var prog: int = mini(int(MotelManager.progress.get(qid, 0)), q.target_amount)
+		var done: bool = MotelManager.done.get(qid, false)
+		items.append({"text": "%s %s — %d/%d · المكافأة %s" % ["✅" if done else "▫", q.title, prog, q.target_amount, Cfg.money(q.reward_cash)], "enabled": false, "cb": func() -> void: pass})
+	items.append({"text": "↩ رجوع", "enabled": true, "cb": open_motel})
+	game.hud.open_menu("📋 مهام اليوم", "تتجدد كل يوم، وتظهر مهام أصعب مع ارتفاع نفوذك. التقدم يُحتسب تلقائياً.", items)
+
+
+func open_shipments() -> void:
+	var items: Array = []
+	var avail := MotelManager.available_shipments()
+	for sh in MotelManager.shipment_catalog:
+		var ok: bool = avail.has(sh)
+		var parts := []
+		for k in sh.contents:
+			parts.append("%d %s" % [int(sh.contents[k]), ItemDB.item_name(k)])
+		items.append({"text": "%s — %s (%s) · تصل بعد %d د%s" % [sh.title, Cfg.money(sh.price), "، ".join(parts), sh.delivery_seconds / 60, "" if ok else "  🔒"], "enabled": ok and game.cash + game.bank >= sh.price, "cb": func() -> void:
+			MotelManager.order_shipment(sh.id)
+			open_shipments()})
+	var pending := []
+	for o in MotelManager.orders:
+		pending.append("%s (%d ث)" % [o.id, maxi(0, int(o.eta) - int(Time.get_unix_time_from_system()))])
+	items.append({"text": "↩ رجوع", "enabled": true, "cb": open_motel})
+	game.hud.open_menu("📦 شحنات السوق السوداء", "الشحنات تصل بالوقت الحقيقي (حتى واللعبة مغلقة). بعضها حصري لمكافآت السجن.
+في الطريق: %s" % ("، ".join(pending) if not pending.is_empty() else "لا شيء"), items)
+
+
+func open_roulette() -> void:
+	var cap := MotelManager.bet_cap()
+	var items: Array = []
+	for amount in [1000, 5000, cap]:
+		for kind in ["red", "black", "even", "odd"]:
+			var label: String = {"red": "أحمر ×2", "black": "أسود ×2", "even": "زوجي ×2", "odd": "فردي ×2"}[kind]
+			items.append({"text": "راهن %s على %s" % [Cfg.money(amount), label], "enabled": game.cash >= amount, "cb": func() -> void:
+				MotelManager.spin(amount, kind)
+				open_roulette()})
+	items.append({"text": "راهن %s على الرقم 7 (×36)" % Cfg.money(1000), "enabled": game.cash >= 1000, "cb": func() -> void:
+		MotelManager.spin(1000, "number", 7)
+		open_roulette()})
+	items.append({"text": "↩ رجوع", "enabled": true, "cb": open_motel})
+	game.hud.open_menu("🎰 الروليت", "تراهن بالكاش الذي معك (%s). حد الرهان %s ويرتفع مع نفوذك." % [Cfg.money(game.cash), Cfg.money(cap)], items)
 
 
 func _motel_launder() -> void:
 	var amt := mini(game.cash, 100000)
 	game.cash -= amt
 	game.bank += amt / 2
-	game.hud.toast("غسلت %s عند Lenny → %s في البنك" % [Cfg.money(amt), Cfg.money(amt / 2)], Color("7dff9e"))
+	game.hud.toast("غسلت %s عند رفيق → %s في البنك" % [Cfg.money(amt), Cfg.money(amt / 2)], Color("7dff9e"))
 	game.check_win()
 	game.save_game()
 	open_motel()
@@ -976,9 +1061,11 @@ func to_dict() -> Dictionary:
 
 
 func from_dict(d: Dictionary) -> void:
-	docs = d.get("docs", 0)
+	if not game.core_owned:
+		docs = d.get("docs", 0)
 	researched = d.get("researched", {})
-	motel_cash = d.get("motel", 0)
+	if not game.core_owned:
+		motel_cash = d.get("motel", 0)
 	eviction_rights = d.get("evict", 0)
 	plot_titles = d.get("plot_titles", [0, 0, 0, 0])
 	settle_titles = d.get("settle_titles", [0, 0, 0, 0])

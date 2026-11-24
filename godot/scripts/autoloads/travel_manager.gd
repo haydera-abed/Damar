@@ -15,6 +15,7 @@ const TRAVEL_SECONDS := 2.0
 var current_hub: Hub = Hub.MOTEL
 var hub_scenes := {}                 # Hub -> "res://…tscn" (اختياري؛ فارغ = بلا تبديل مشهد)
 var traveling := false
+var home_check: Callable = Callable()   # تستبدلها اللعبة ثلاثية الأبعاد بفحص منزلها
 
 
 func can_travel(to_hub: Hub) -> String:
@@ -26,7 +27,8 @@ func can_travel(to_hub: Hub) -> String:
 		return "أنت هنا بالفعل"
 	if GameState.wanted > 0:
 		return "لا تنقل سريع وأنت مطلوب — اختفِ أولاً"
-	if to_hub == Hub.HOME and not LandManager.has_home():
+	var has_home: bool = bool(home_check.call()) if home_check.is_valid() else LandManager.has_home()
+	if to_hub == Hub.HOME and not has_home:
 		return "لا تملك قاعدة: استأجر قطعة أرض أولاً"
 	return ""
 

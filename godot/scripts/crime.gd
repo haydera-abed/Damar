@@ -46,10 +46,22 @@ class Target:
 var game: Node
 var targets: Array[Target] = []
 var bag: Array[Dictionary] = []      # {name, value, kind}
-var tools := {}                      # الأداة → العدد
+## الأدوات تعيش في مخزون GameState (طبقة المنطق) — نفس القاموس
+var tools: Dictionary:
+	get:
+		return GameState.inventory
+	set(v):
+		for k in v:
+			GameState.inventory[k] = int(v[k])
 var masked := false
 var notoriety_xp := 0
-var launder_pool := 0.0              # نقود في طاولة الغسيل
+## المال على طاولة الغسيل يعيش في EconomyManager (يُغسل بالوقت الحقيقي حتى واللعبة مغلقة)
+var launder_pool: float:
+	get:
+		return EconomyManager.desk_pool
+	set(v):
+		EconomyManager.set_desk_pool(v)
+var _was_laundering := false
 var launder_level := 1
 var fences: Array[Vector3] = []
 var dealer_pos := Vector3.ZERO
@@ -207,9 +219,10 @@ func to_dict() -> Dictionary:
 
 
 func from_dict(d: Dictionary) -> void:
-	tools = d.get("tools", {})
+	if not game.core_owned:                 # ترحيل لمرة واحدة؛ بعدها المصدر هو طبقة المنطق
+		tools = d.get("tools", {})
+		launder_pool = d.get("pool", 0.0)
 	notoriety_xp = d.get("notoriety", 0)
-	launder_pool = d.get("pool", 0.0)
 	launder_level = d.get("launder_level", 1)
 	bag.assign(d.get("bag", []))
 
@@ -218,6 +231,7 @@ func from_dict(d: Dictionary) -> void:
 func toggle_mask() -> void:
 	masked = not masked
 	game.player.human.set_mask(masked)
+	HeistCityManager.set_masked(masked)
 	game.hud.toast("القناع: " + ("ملثّم 🥷" if masked else "مكشوف الوجه"), Color("c9c9c9"))
 
 
@@ -234,18 +248,18 @@ func tick(dt: float) -> void:
 		var open := t.cooldown <= 0.0
 		t.ring.visible = open
 		t.label3d.modulate.a = 1.0 if open else 0.3
-	# الغسيل يستمر حتى أثناء غيابك
-	if launder_pool > 0.0:
-		var amt := minf(launder_pool, launder_rate() * dt)
-		launder_pool -= amt
-		var cut: float = amt * game.land.tenant_tax() if game.land != null else 0.0   # ضريبة مالك المستوطنة على غسيل سكانها
-		if cut > 0.0:
-			game.land.pay_tax(cut)
-		game.bank += int(round(amt - cut))
-		if launder_pool <= 0.5:
-			launder_pool = 0.0
-			game.hud.toast("اكتمل غسيل الأموال 🧼 — المال في حسابك البنكي", Color("7dff9e"))
-			game.check_win()
+	# الغسيل يحسبه EconomyManager بفارق الوقت الحقيقي؛ هنا نزوّده بالمعدّل والضريبة فقط
+	EconomyManager.rate_override_per_sec = launder_rate()
+	if not EconomyManager.tax_hook.is_valid():
+		EconomyManager.tax_hook = func(amount: float) -> float:
+			var cut: float = amount * game.land.tenant_tax() if game.land != null else 0.0   # ضريبة مالك المستوطنة
+			if cut > 0.0:
+				game.land.pay_tax(cut)
+			return cut
+	if _was_laundering and launder_pool <= 0.5:
+		game.hud.toast("اكتمل غسيل الأموال 🧼 — المال في حسابك البنكي", Color("7dff9e"))
+		game.check_win()
+	_was_laundering = launder_pool > 0.5
 	if exhibit_car and is_instance_valid(exhibit_car) and exhibit_car.exhibit and game.player.car == exhibit_car:
 		exhibit_car.exhibit = false
 
@@ -370,6 +384,7 @@ func _complete(t: Target) -> void:
 	game.hud.toast("+%s %s في الحقيبة  (%d/%d)" % [Cfg.money(total), t.loot_name, bag.size(), BAG_SLOTS], Color("7dff9e"))
 	game.sfx.cash()
 	game.land.on_robbery(total)
+	MotelManager.report(QuestData.Objective.ROB_TARGETS, 1)
 
 
 func _sell_bag() -> void:
@@ -387,6 +402,7 @@ func _sell_bag() -> void:
 	var lv_before := notoriety_level()
 	notoriety_xp += base
 	game.cash += paid
+	MotelManager.report(QuestData.Objective.SELL_LOOT, paid)
 	bag.assign(keys)                  # مفاتيح الودائع تبقى للمقايضة
 	game.hud.toast("بعت %d غنيمة بـ %s (نقود قذرة) — اغسلها في المخبأ" % [sellable.size(), Cfg.money(paid)], Color("7dff9e"))
 	if notoriety_level() > lv_before:

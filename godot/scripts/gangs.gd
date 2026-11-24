@@ -381,7 +381,14 @@ func start_raid() -> void:
 		game.sfx.beep(950.0, 0.3)
 
 
+## المداهمة الفيدرالية تمر عبر PrisonManager (سنوات سجن + نفوذ دائم)، ثم يُمسح العالم عند الحكم
 func federal_raid() -> void:
+	if GameState.in_prison:
+		return
+	PrisonManager.imprison("federal_raid")
+
+
+func wipe_world() -> void:
 	best_season = maxi(best_season, game.bank)
 	game.hud.toast("🏛 المداهمة الفيدرالية! انتهى الموسم — أفضل نتيجة: %s" % Cfg.money(best_season), Color("ffd36b"))
 	day_count = 0

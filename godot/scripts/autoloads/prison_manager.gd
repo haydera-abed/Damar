@@ -7,12 +7,15 @@ extends Node
 ## - سنوات السجن تقدم دائم (في الملف الدائم) يرفع «النفوذ» ويفتح مكافآت دائمة (وشوم، مظاهر، شحنات حصرية).
 ## - الخروج: تختار ولاية جديدة، فتبدأ بيانات الولاية من الصفر مع بقاء النفوذ.
 
+signal imprisoning(reason: String)     # قبل المصادرة (لتسجيل أفضل نتيجة مثلاً)
 signal police_arrested(lost_value: int)
 signal sentenced(years: int, confiscated_value: int, total_years: int, reason: String)
 signal authority_level_up(level: int, rewards: Array)
 signal released(state_id: String)
 
 const STATES := ["sahra", "sahel", "jabal"]
+
+var extra_wealth: Callable = Callable()  # ثروة إضافية تحسبها اللعبة (غنائم، رفوف، منزل…)
 
 
 func _ready() -> void:
@@ -48,7 +51,10 @@ func surrender_to_feds() -> int:
 func imprison(reason: String) -> int:
 	if GameState.in_prison:
 		return 0
+	imprisoning.emit(reason)
 	var value := EconomyManager.total_wealth() + MotelManager.stash_cash + _property_value()
+	if extra_wealth.is_valid():
+		value += int(extra_wealth.call())
 	var years := years_for(value)
 	var before := authority_level()
 	var p: Dictionary = GameState.profile

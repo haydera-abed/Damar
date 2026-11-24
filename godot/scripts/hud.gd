@@ -390,6 +390,7 @@ func _build_menus() -> void:
 	_settings_btns["time"] = _button("", p, func(): game.advance_time())
 	_settings_btns["cycle"] = _button("", p, func(): game.toggle_day_cycle())
 	_settings_btns["season"] = _button("", p, func(): game.toggle_season())
+	_button("⛓ الاستسلام للفيدراليين (سنوات سجن ← نفوذ دائم)", p, func(): game.surrender_feds())
 	for k in _settings_btns:
 		var sb: Button = _settings_btns[k]
 		sb.add_theme_font_size_override("font_size", 18)
@@ -533,6 +534,7 @@ func refresh(dt: float, hint: String) -> void:
 	var ld: Land = game.land
 	info_l.text += "\n🏠 %s · 📄 %d%s" % [ld.settlements[ld.home.x].name if ld.home.x >= 0 else "الموتيل (بلا أرض)", ld.docs,
 		("   🏛 المداهمة الفيدرالية بعد %d أيام" % (Gangs.SEASON_DAYS - game.gangs.day_count)) if game.gangs.season_mode else ""]
+	info_l.text += "\n⛓ النفوذ %d · %d سنة سجن · %s" % [PrisonManager.authority_level(), int(GameState.profile.jail_years), StateFactory.STATE_NAMES.get(GameState.state.id, "") if GameState.state else "في السجن"]
 	health_bar.value = game.player.health / game.player.max_health
 	if game.cop.on_duty:
 		info_l.text = "🚔 مناوبة — %s · اعتقالات %d · %s\n🔫 %s" % [game.cop.rank_name(), game.cop.shift_arrests, Cfg.money(game.cop.shift_pay), wtxt]
