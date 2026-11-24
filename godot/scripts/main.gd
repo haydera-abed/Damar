@@ -817,6 +817,11 @@ func _envshots() -> void:
 					RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
 					RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
 					RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576])
+	# قائمة الإيقاف مع الإعدادات
+	hud.visible = true
+	set_state("paused")
+	await _frames(10)
+	await _shot("%s/zz_pause_menu.png" % out)
 	get_tree().quit()
 
 
