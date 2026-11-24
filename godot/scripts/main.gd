@@ -159,6 +159,8 @@ func _ready() -> void:
 		net.my_name = _arg(args, "--name", "لاعب")
 		net.my_role = _arg(args, "--role", "criminal")
 		_bot = _arg(args, "--bot")
+		if _arg(args, "--years") != "":
+			GameState.profile.jail_years = int(_arg(args, "--years"))   # نفوذ تجريبي يُعلن للخادم
 		net.log_events = true
 		start_join(_arg(args, "--join"), int(_arg(args, "--port", str(Net.PORT))))
 	elif "--autotest" in args:
@@ -227,6 +229,7 @@ func start_join(ip: String, port := Net.PORT) -> void:
 
 ## إيقاف ما لا يناسب اللعب الجماعي: الشرطة الآلية (الشرطة لاعبون حقيقيون)
 func _go_online() -> void:
+	heist.attach_net()
 	GameState.persistence = false          # في اللعب الجماعي الخادم يحفظ التقدم؛ لا نخلطه بالحفظ الفردي
 	core_owned = false                     # ملف اللاعب من الخادم يُطبَّق كاملاً
 	land.mp_apply(net.settle_owner, net.plot_tenant)
@@ -287,7 +290,7 @@ func local_net_state() -> Array:
 	var c := player.car
 	var p: Vector3 = c.global_position if c else player.global_position
 	var spd: float = absf(c.speed) if c else Vector2(player.velocity.x, player.velocity.z).length()
-	return [p, c.heading() if c else player.facing, spd, f, c.model_name if c else "", c.global_transform if c else Transform3D.IDENTITY, player.health, crime.bag_value()]
+	return [p, c.heading() if c else player.facing, spd, f, c.model_name if c else "", c.global_transform if c else Transform3D.IDENTITY, player.health, crime.bag_value() + HeistCityManager.bag_value()]
 
 
 func net_set_wanted(level: int) -> void:
@@ -356,11 +359,13 @@ func _bot_tick(dt: float) -> void:
 			print("BOT tenant: pool=%.0f bank=%d" % [crime.launder_pool, bank])
 		if _bot_t > 27.0 and _bot_t - dt <= 27.0:
 			print("BOT tenant: after eviction home=%s alerts=%d" % [land.home, alerts.size()])
+	elif _bot == "heister":
+		_heister_bot(dt)
 	elif _bot == "cop":
 		if int(_bot_t / 5.0) != int((_bot_t - dt) / 5.0) and _bot_t > 0.0:
 			var fl := []
 			for id in net.remotes:
-				fl.append("%s:%d" % [net.remotes[id].pname, net.remotes[id].flags])
+				fl.append("%s:%d tag=%s" % [net.remotes[id].pname, net.remotes[id].flags, net.remotes[id].tag.text.replace("\n", "|")])
 			print("BOT cop: t=%.0f state=%s remotes=%s" % [_bot_t, state, fl])
 		for id in net.remotes:
 			var rp: RemotePlayer = net.remotes[id]
@@ -376,6 +381,39 @@ func _bot_tick(dt: float) -> void:
 					net.request_arrest(id)
 					print("BOT cop: arrest requested on %s, bank=%d" % [rp.pname, bank])
 					_bot_t = -1000.0
+
+
+func _heister_bot(dt: float) -> void:
+	var at := func(t: float) -> bool: return _bot_t > t and _bot_t - dt <= t
+	if at.call(3.0):
+		crime.toggle_mask()
+		player.teleport(heist.spots["sb_kiosk"].pos + Vector3(0, 0.3, 0), 0.0)
+	if at.call(3.5):
+		HeistCityManager.start_heist("sb_kiosk")
+		print("BOT heister: requested kiosk, auth=%d" % PrisonManager.authority_level())
+	if at.call(10.0):
+		print("BOT heister: server bag=%s value=%d" % [HeistCityManager.bag_inventory, HeistCityManager.bag_value()])
+		var car := cars_for_district("sunny_beach")
+		player.teleport(heist.cars[car].pos + Vector3(0, 0.3, 0), 0.0)
+	if at.call(10.5):
+		HeistCityManager.extract_loot("fence_car", cars_for_district("sunny_beach"), false)
+	if at.call(16.0):
+		print("BOT heister: after fence unsecured=%s game_bag=%d" % [HeistCityManager.has_unextracted(), crime.bag.size()])
+		player.teleport(heist.spots["pk_cafe"].pos + Vector3(0, 0.3, 0), 0.0)
+	if at.call(16.5):
+		HeistCityManager.start_heist("pk_cafe")
+	if at.call(22.0):
+		print("BOT heister: cafe bag=%d wanted=%d" % [HeistCityManager.bag_value(), wanted])
+		crime.tools["drill"] = 1
+		player.teleport(heist.spots["dt_bank"].pos + Vector3(0, 0.3, 0), 0.0)
+	if at.call(22.5):
+		HeistCityManager.start_heist("dt_bank")          # هدف كبير: إنذار عام للجميع
+	if at.call(25.0):
+		HeistCityManager.cancel_heist()
+		print("BOT heister: wanted=%d bag=%d, surrendering" % [wanted, HeistCityManager.bag_value()])
+		player.set_surrender(true)
+	if at.call(45.0):
+		print("BOT heister: after arrest state=%s bag=%d masked_lost=%s" % [state, HeistCityManager.bag_value(), not HeistCityManager.has_unextracted()])
 
 
 # ---------------------------------------------------------------- أنظمة الجريمة والقتال

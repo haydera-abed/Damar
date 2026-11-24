@@ -44,7 +44,9 @@ func _update_tag() -> void:
 	var stars := ""
 	for i in wanted:
 		stars += "★"
-	tag.text = ("🚔 " if role == "cop" else "") + pname + ("\n" + stars if stars != "" else "")
+	var auth: int = int(game.net.peers.get(peer_id, {}).get("auth", 0))
+	var crown := ("  👑%d" % auth) if auth > 0 else ""     # النفوذ الدائم (سنوات السجن الفيدرالي)
+	tag.text = ("🚔 " if role == "cop" else "") + pname + crown + ("\n" + stars if stars != "" else "")
 	tag.modulate = Color("6fa0ff") if role == "cop" else (Color("ffcf3a") if wanted > 0 else Color.WHITE)
 
 

@@ -45,6 +45,10 @@ var extraction: Dictionary = {}                 # {point, t, sell}
 var alarm_level: int = 0
 var alarm_district: String = ""
 var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+## اللعب الجماعي: الخادم يحسم. إن ضُبطت هذه الخطافات تُرسل الطلبات للخادم بدل التنفيذ المحلي
+var start_hook: Callable = Callable()      # (target_id) -> طلب بدء
+var complete_hook: Callable = Callable()   # (target_id) -> الخادم يرمي الغنائم
+var extract_hook: Callable = Callable()    # (point_id, sell) -> الخادم يتحقق ويؤمّن
 var _alarm_t: float = 0.0
 var _was_wanted: bool = false
 
@@ -104,7 +108,8 @@ func set_masked(masked: bool) -> void:
 
 
 # ---------------------------------------------------------------- السطو
-func start_heist(id: String) -> bool:
+## يعيد "" إن أمكن السطو، وإلا السبب
+func check_heist(id: String) -> String:
 	var t: HeistTargetData = target(id)
 	var why: String = ""
 	if t == null:
@@ -117,9 +122,24 @@ func start_heist(id: String) -> bool:
 		why = "الهدف مغلق مؤقتاً"
 	elif t.required_tool != "" and GameState.item_count(t.required_tool) <= 0:
 		why = "تحتاج %s" % ItemDB.item_name(t.required_tool)
+	return why
+
+
+func start_heist(id: String) -> bool:
+	var why := check_heist(id)
 	if why != "":
 		heist_failed.emit(id, why)
 		return false
+	if start_hook.is_valid():
+		start_hook.call(id)                     # ننتظر موافقة الخادم ثم begin_heist
+		return true
+	begin_heist(id)
+	return true
+
+
+## بدء السطو فعلياً (محلياً، أو بعد موافقة الخادم في اللعب الجماعي)
+func begin_heist(id: String) -> void:
+	var t: HeistTargetData = target(id)
 	if t.required_tool != "":
 		GameState.remove_item(t.required_tool)
 	active = {"id": id, "t": 0.0, "duration": t.duration}
@@ -131,7 +151,6 @@ func start_heist(id: String) -> bool:
 		GameState.set_wanted(maxi(GameState.wanted, CITY_ALARM_WANTED))
 		city_alarm_triggered.emit(t.id, t.district)
 	heist_started.emit(id, t.duration)
-	return true
 
 
 func cancel_heist(reason: String = "توقفت") -> void:
@@ -168,9 +187,8 @@ func step(dt: float) -> void:
 			_secure(extraction.point, bool(extraction.sell))
 
 
-func _complete() -> void:
-	var t: HeistTargetData = target(active.id)
-	active = {}
+## رمي الغنائم من جدول الهدف (يستخدمه الخادم أيضاً)
+func roll_loot(t: HeistTargetData) -> Dictionary:
 	var loot: Dictionary = {}
 	for k: String in t.loot_table:
 		var pair: Array = t.loot_table[k]
@@ -179,9 +197,20 @@ func _complete() -> void:
 			loot[k] = n
 	if rng.randf() < 0.35:
 		loot["document"] = int(loot.get("document", 0)) + 1
+	return loot
+
+
+func _complete() -> void:
+	var t: HeistTargetData = target(active.id)
+	active = {}
+	cooldowns[t.id] = int(Time.get_unix_time_from_system() + t.cooldown)
+	if complete_hook.is_valid():
+		complete_hook.call(t.id)                # الخادم يرمي الغنائم ويرسل الحقيبة (set_bag)
+		heist_completed.emit(t.id, {})
+		return
+	var loot: Dictionary = roll_loot(t)
 	for k: String in loot:
 		bag_inventory[k] = int(bag_inventory.get(k, 0)) + int(loot[k])
-	cooldowns[t.id] = int(Time.get_unix_time_from_system() + t.cooldown)
 	heist_completed.emit(t.id, loot)
 	bag_changed.emit(bag_inventory, bag_value())
 
@@ -214,8 +243,25 @@ func abort_extraction() -> void:
 	extraction = {}
 
 
+## حقيبة يحددها الخادم (اللعب الجماعي)
+func set_bag(bag: Dictionary) -> void:
+	bag_inventory = {}
+	for k: String in bag:
+		bag_inventory[k] = int(bag[k])
+	bag_changed.emit(bag_inventory, bag_value())
+
+
 func _secure(point: String, sell: bool) -> void:
-	var items: Dictionary = bag_inventory.duplicate()
+	if extract_hook.is_valid():
+		extraction = {}
+		extract_hook.call(point, sell)          # الخادم يتحقق من الموقع ثم secure_items
+		return
+	secure_items(bag_inventory.duplicate(), sell, point)
+
+
+## تأمين عناصر محددة (محلياً، أو بعد تأكيد الخادم)
+func secure_items(items: Dictionary, sell: bool, point: String) -> void:
+	bag_inventory = items.duplicate()
 	var value: int = bag_value()
 	if sell:
 		EconomyManager.add_dirty(value)                       # سيارة التهريب تشتري فوراً

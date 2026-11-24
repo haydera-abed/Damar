@@ -101,8 +101,34 @@ func hub_at(p: Vector3) -> int:
 	return TravelManager.Hub.HEIST_CITY
 
 
+## اللعب الجماعي: كل خطوات السطو تمر عبر الخادم (net.gd)
+func attach_net() -> void:
+	HeistCityManager.start_hook = func(id: String) -> void: game.net.heist_request(id)
+	HeistCityManager.complete_hook = func(id: String) -> void: game.net.heist_done(id)
+	HeistCityManager.extract_hook = func(point: String, sell: bool) -> void: game.net.heist_extract(point, sell)
+
+
+func detach_net() -> void:
+	HeistCityManager.start_hook = Callable()
+	HeistCityManager.complete_hook = Callable()
+	HeistCityManager.extract_hook = Callable()
+
+
+func on_approved(target_id: String) -> void:
+	_heist_target = target_id
+	game.player.robbing = true
+
+
+func on_server_loot(loot: Dictionary) -> void:
+	var parts := []
+	for k in loot:
+		parts.append("%d %s" % [int(loot[k]), ItemDB.item_name(k)])
+	game.hud.toast("💰 في حقيبة السطو (غير مؤمّنة): %s" % "، ".join(parts), Color("ffd36b"))
+	game.sfx.cash()
+
+
 func tick(_dt: float) -> void:
-	if game.net.is_online() or game.cop.on_duty or TravelManager.traveling:
+	if game.net.mode == Net.Mode.SERVER or game.cop.on_duty or TravelManager.traveling:
 		return
 	var p: Vector3 = game.player_pos()
 	var hub := hub_at(p)
@@ -141,7 +167,7 @@ func tick(_dt: float) -> void:
 
 ## يعيد التلميح ويتعامل مع E
 func interact(_dt: float) -> String:
-	if game.player.car != null or game.cop.on_duty or game.net.is_online():
+	if game.player.car != null or game.cop.on_duty:
 		return ""
 	var p: Vector3 = game.player_pos()
 	for id in spots:
@@ -189,6 +215,8 @@ func interact(_dt: float) -> String:
 func _on_completed(target_id: String, loot: Dictionary) -> void:
 	_heist_target = ""
 	game.player.robbing = false
+	if HeistCityManager.complete_hook.is_valid():
+		return                                  # الخادم سيرسل الغنائم (on_server_loot)
 	var parts := []
 	for k in loot:
 		parts.append("%d %s" % [int(loot[k]), ItemDB.item_name(k)])

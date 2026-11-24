@@ -32,6 +32,10 @@ var wanted := {}             # الخادم: id -> {level, unseen}
 var district_owner: Array = ["", "", "", "", "", "", "", "", ""]
 var settle_owner: Array = ["", "", "", "", "", "", "", "", ""]   # مالك كل مستوطنة (اسم لاعب)
 var plot_tenant := {}                                           # "مستوطنة:قطعة" -> اسم الساكن
+# مدينة السطو (الخادم يحسم): إغلاق الأهداف، السطو الجاري، وحقيبة كل لاعب
+var heist_cd := {}                                              # target_id -> unix حتى يُفتح
+var heist_active := {}                                          # peer -> {target, t0}
+var heist_bags := {}                                            # peer -> {item: n}
 var _send_t := 0.0
 var _snap_t := 0.0
 var _tax_t := 120.0
@@ -71,7 +75,7 @@ func host(port := PORT, dedicated := false) -> String:
 	_signals()
 	_profiles.load(PROFILE_PATH)
 	if not dedicated:
-		peers[1] = {"name": my_name, "role": my_role}
+		peers[1] = {"name": my_name, "role": my_role, "auth": PrisonManager.authority_level(), "years": int(GameState.profile.jail_years)}
 		wanted[1] = {"level": 0, "unseen": 0.0}
 	_log("listening on port %d" % port)
 	return ""
@@ -90,6 +94,8 @@ func join(ip: String, port := PORT) -> String:
 
 
 func leave() -> void:
+	if game.heist:
+		game.heist.detach_net()
 	if multiplayer.multiplayer_peer:
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = null
@@ -115,7 +121,7 @@ func _on_peer_connected(id: int) -> void:
 
 func _on_connected() -> void:
 	_log("connected, registering as %s (%s)" % [my_name, my_role])
-	register.rpc_id(1, my_name, my_role)
+	register.rpc_id(1, my_name, my_role, my_info())
 
 
 func _on_failed() -> void:
@@ -130,6 +136,8 @@ func _on_server_gone() -> void:
 
 
 func _on_peer_disconnected(id: int) -> void:
+	heist_bags.erase(id)
+	heist_active.erase(id)
 	_log("peer %d left" % id)
 	if is_server() and peers.has(id):
 		chat.rpc(0, "%s غادر المدينة" % peers[id].name)
@@ -163,8 +171,13 @@ func _unique_name(n: String) -> String:
 	return n
 
 
+## معلومات تُعلن عند الدخول: النفوذ وسنوات السجن (من الملف الدائم لطبقة المنطق)
+func my_info() -> Dictionary:
+	return {"auth": PrisonManager.authority_level(), "years": int(GameState.profile.jail_years)}
+
+
 @rpc("any_peer", "reliable")
-func register(pname: String, role: String) -> void:
+func register(pname: String, role: String, info: Dictionary = {}) -> void:
 	if not is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -173,14 +186,14 @@ func register(pname: String, role: String) -> void:
 	if role == "cop" and _cop_count() >= MAX_COPS:
 		role = "criminal"
 		note = "كل مقاعد الشرطة (%d) مشغولة — دخلت كمجرم" % MAX_COPS
-	peers[id] = {"name": pname, "role": role}
+	peers[id] = {"name": pname, "role": role, "auth": int(info.get("auth", 0)), "years": int(info.get("years", 0))}
 	wanted[id] = {"level": 0, "unseen": 0.0}
 	var profile: Dictionary = _profiles.get_value("players", pname, {})
 	welcome.rpc_id(id, id, pname, role, peers, profile, _shared_state(), note)
-	peer_joined.rpc(id, pname, role)
+	peer_joined.rpc(id, pname, role, peers[id].auth)
 	if mode == Mode.HOST:
 		_spawn_remote(id)
-	_log("registered %d as %s (%s)" % [id, pname, role])
+	_log("registered %d as %s (%s, authority %d)" % [id, pname, role, peers[id].auth])
 	chat.rpc(0, "%s دخل المدينة (%s)" % [pname, "شرطي" if role == "cop" else "مجرم"])
 	_chat_local(0, "%s دخل المدينة (%s)" % [pname, "شرطي" if role == "cop" else "مجرم"])
 
@@ -189,7 +202,7 @@ func _shared_state() -> Dictionary:
 	var cds := []
 	for t in game.crime.targets:
 		cds.append([t.cooldown, t.uses_left])
-	return {"targets": cds, "districts": district_owner, "settle": settle_owner, "plots": plot_tenant}
+	return {"targets": cds, "districts": district_owner, "settle": settle_owner, "plots": plot_tenant, "heist_cd": heist_cd}
 
 
 @rpc("authority", "reliable")
@@ -210,15 +223,18 @@ func welcome(id: int, pname: String, role: String, peer_dict: Dictionary, profil
 	settle_owner = shared.get("settle", settle_owner)
 	plot_tenant = shared.get("plots", {})
 	game.land.mp_apply(settle_owner, plot_tenant)
+	heist_cd = shared.get("heist_cd", {})
+	for k in heist_cd:
+		HeistCityManager.cooldowns[k] = int(heist_cd[k])
 	joined.emit(true, note)
 	_log("welcome as %s (%s), %d peers" % [pname, role, peers.size()])
 
 
 @rpc("authority", "reliable")
-func peer_joined(id: int, pname: String, role: String) -> void:
+func peer_joined(id: int, pname: String, role: String, auth: int = 0) -> void:
 	if id == my_id():
 		return
-	peers[id] = {"name": pname, "role": role}
+	peers[id] = {"name": pname, "role": role, "auth": auth}
 	_spawn_remote(id)
 
 
@@ -530,6 +546,10 @@ func _do_arrest(cop: int, target: int) -> void:
 	reward += int(ts[7] * 0.25)
 	var cop_name: String = peers[cop].name
 	wanted[target].level = 0
+	heist_active.erase(target)
+	if ts[3] & F_MASK != 0 and heist_bags.has(target):
+		_log("heist bag of %s lost on arrest" % peers[target].name)
+		heist_bags.erase(target)
 	_log("%s arrested %s, reward %d" % [cop_name, peers[target].name, reward])
 	if target == my_id():
 		arrested(cop_name)
@@ -731,6 +751,169 @@ func land_rent(amount: int, _from: String) -> void:
 	if _rent_acc >= 1000:
 		game.hud.toast("🏛 ضرائب سكان مستوطنتك: +%s" % Cfg.money(_rent_acc), Color("7dff9e"))
 		_rent_acc = 0
+
+
+# ---------------------------------------------------------------- مدينة السطو (الخادم يحسم)
+func heist_request(target_id: String) -> void:
+	if is_server():
+		_heist_start(my_id(), target_id)
+	else:
+		_req_heist.rpc_id(1, target_id)
+
+
+@rpc("any_peer", "reliable")
+func _req_heist(target_id: String) -> void:
+	if is_server():
+		_heist_start(multiplayer.get_remote_sender_id(), target_id)
+
+
+func _heist_start(id: int, target_id: String) -> void:
+	var t: HeistTargetData = HeistCityManager.target(target_id)
+	var now := int(Time.get_unix_time_from_system())
+	var why := ""
+	if t == null or not states.has(id) or peers.get(id, {}).get("role", "") == "cop":
+		why = "غير مسموح"
+	elif int(heist_cd.get(target_id, 0)) > now:
+		why = "سبقك أحدهم — الهدف مغلق مؤقتاً"
+	elif (states[id][0] as Vector3).distance_to(game.heist.spots[target_id].pos) > 4.5:
+		why = "ابتعدت عن الهدف"
+	if why != "":
+		_send(id, "heist_denied", [target_id, why])
+		return
+	heist_active[id] = {"target": target_id, "t0": Time.get_ticks_msec()}
+	heist_cd[target_id] = now + int(t.cooldown)
+	heist_cooldown.rpc(target_id, heist_cd[target_id])
+	var masked: bool = states[id][3] & F_MASK != 0
+	_raise(id, t.alarm_level + (0 if masked else 1))
+	var who: String = peers[id].name
+	_log("%s started heist %s%s" % [who, target_id, "" if masked else " (unmasked)"])
+	if t.is_major:
+		_raise(id, HeistCityManager.CITY_ALARM_WANTED)
+		heist_city_alarm.rpc(target_id, t.district, game.heist.spots[target_id].pos, who)
+		if mode != Mode.SERVER:
+			heist_city_alarm(target_id, t.district, game.heist.spots[target_id].pos, who)
+	_send(id, "heist_approved", [target_id])
+
+
+func heist_done(target_id: String) -> void:
+	if is_server():
+		_heist_finish(my_id(), target_id)
+	else:
+		_req_heist_done.rpc_id(1, target_id)
+
+
+@rpc("any_peer", "reliable")
+func _req_heist_done(target_id: String) -> void:
+	if is_server():
+		_heist_finish(multiplayer.get_remote_sender_id(), target_id)
+
+
+func _heist_finish(id: int, target_id: String) -> void:
+	var a: Dictionary = heist_active.get(id, {})
+	var t: HeistTargetData = HeistCityManager.target(target_id)
+	if a.is_empty() or a.target != target_id or t == null:
+		return
+	if (Time.get_ticks_msec() - int(a.t0)) / 1000.0 < t.duration * 0.85:
+		_log("rejected early heist finish by %s" % peers.get(id, {}).get("name", "?"))
+		return
+	heist_active.erase(id)
+	var bag: Dictionary = heist_bags.get(id, {})
+	var loot: Dictionary = HeistCityManager.roll_loot(t)
+	for k in loot:
+		bag[k] = int(bag.get(k, 0)) + int(loot[k])
+	heist_bags[id] = bag
+	_log("%s finished %s, bag value %d" % [peers[id].name, target_id, _bag_value(bag)])
+	_send(id, "heist_bag", [bag, loot])
+
+
+func heist_extract(point: String, sell: bool) -> void:
+	if is_server():
+		_heist_extract(my_id(), point, sell)
+	else:
+		_req_heist_extract.rpc_id(1, point, sell)
+
+
+@rpc("any_peer", "reliable")
+func _req_heist_extract(point: String, sell: bool) -> void:
+	if is_server():
+		_heist_extract(multiplayer.get_remote_sender_id(), point, sell)
+
+
+func _heist_extract(id: int, point: String, sell: bool) -> void:
+	var bag: Dictionary = heist_bags.get(id, {})
+	if bag.is_empty() or not states.has(id):
+		return
+	var p: Vector3 = states[id][0]
+	var ok := false
+	if point == "city_exit":
+		ok = game.heist.hub_at(p) != TravelManager.Hub.HEIST_CITY and wanted.get(id, {"level": 0}).level == 0
+	elif game.heist.cars.has(point):
+		ok = p.distance_to(game.heist.cars[point].pos) < 5.0
+	if not ok:
+		_send(id, "heist_denied", [point, "الخادم رفض التأمين (لست عند سيارة التهريب أو ما زلت مطلوباً)"])
+		return
+	heist_bags.erase(id)
+	if point != "city_exit" and wanted.has(id):
+		wanted[id].level = 0
+	_log("%s secured heist loot (%d) at %s" % [peers[id].name, _bag_value(bag), point])
+	_send(id, "heist_secured", [bag, sell, point])
+
+
+func _bag_value(bag: Dictionary) -> int:
+	var v := 0
+	for k in bag:
+		v += ItemDB.value(k) * int(bag[k])
+	return v
+
+
+## إرسال إلى لاعب واحد (أو تنفيذ محلي إن كان المضيف نفسه)
+func _send(id: int, method: String, args: Array) -> void:
+	if id == my_id():
+		callv(method, args)
+	else:
+		rpc_id.callv([id, method] + args)
+
+
+@rpc("authority", "reliable")
+func heist_denied(_what: String, why: String) -> void:
+	game.hud.toast(why, Color("ff9b6b"))
+	HeistCityManager.abort_extraction()
+
+
+@rpc("authority", "reliable")
+func heist_approved(target_id: String) -> void:
+	HeistCityManager.begin_heist(target_id)
+	game.heist.on_approved(target_id)
+
+
+@rpc("authority", "reliable")
+func heist_cooldown(target_id: String, until: int) -> void:
+	heist_cd[target_id] = until
+	HeistCityManager.cooldowns[target_id] = until
+
+
+@rpc("authority", "reliable")
+func heist_city_alarm(target_id: String, district: String, pos: Vector3, who: String) -> void:
+	if mode == Mode.SERVER:
+		return
+	game.add_alert(pos)
+	var t := HeistCityManager.target(target_id)
+	_log("city alarm: %s at %s" % [who, target_id])
+	if my_role == "cop":
+		game.hud.toast("🚨 إنذار عام: %s يسطو على %s في %s!" % [who, t.title, HeistCityManager.district_name(district)], Color("ff3b3b"))
+	elif who != my_name:
+		game.hud.toast("📢 %s يسطو على %s — الشرطة كلها في الطريق" % [who, t.title], Color("ffd36b"))
+
+
+@rpc("authority", "reliable")
+func heist_bag(bag: Dictionary, loot: Dictionary) -> void:
+	HeistCityManager.set_bag(bag)
+	game.heist.on_server_loot(loot)
+
+
+@rpc("authority", "reliable")
+func heist_secured(bag: Dictionary, sell: bool, point: String) -> void:
+	HeistCityManager.secure_items(bag, sell, point)
 
 
 # ---------------------------------------------------------------- تغيير الدور
