@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>دمار: مطاردة الليل</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+    { "imports": { "three": "./lib/three.module.min.js", "three/addons/": "./lib/addons/" } }
+  </script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud" class="hidden">
+    <div id="topRight" class="panel">
+      <div class="line"><span>معك</span><b id="cash">$0</b></div>
+      <div class="line"><span>في المخبأ</span><b id="bank">$0</b></div>
+      <div class="goal">
+        <div class="bar"><i id="goalFill"></i></div>
+        <small id="goalText"></small>
+      </div>
+    </div>
+
+    <div id="topLeft">
+      <div id="stars"><span>★</span><span>★</span><span>★</span><span>★</span><span>★</span></div>
+      <div id="wantedText"></div>
+      <div id="loseBar" class="bar hidden"><i id="loseFill"></i></div>
+    </div>
+
+    <div id="arrest" class="hidden">
+      <div>يتم القبض عليك! اهرب!</div>
+      <div class="bar"><i id="arrestFill"></i></div>
+    </div>
+
+    <div id="toast"></div>
+
+    <div id="bottomCenter">
+      <div id="progress" class="hidden">
+        <div id="progLabel"></div>
+        <div class="bar"><i id="progFill"></i></div>
+      </div>
+      <div id="hint"></div>
+    </div>
+
+    <canvas id="minimap" width="200" height="200"></canvas>
+
+    <div id="bottomRight">
+      <div id="speedo" class="hidden"><b id="kmh">0</b><small>كم/س</small></div>
+      <div id="stamWrap"><small>اللياقة</small><div class="bar"><i id="stamFill"></i></div></div>
+    </div>
+  </div>
+
+  <div id="menu" class="overlay">
+    <div class="card">
+      <h1>دمار</h1>
+      <h2>مطاردة الليل</h2>
+      <p class="lead">اسرق المتاجر والبنوك في مدينة لا تنام، اهرب من الشرطة، وخبّئ غنيمتك في المخبأ.
+        اجمع <b>$250,000</b> لتصبح أخطر لص في المدينة.</p>
+      <div class="controls">
+        <div><kbd>W A S D</kbd> الحركة / القيادة</div>
+        <div><kbd>الفأرة</kbd> تدوير الكاميرا</div>
+        <div><kbd>Shift</kbd> الركض</div>
+        <div><kbd>E</kbd> (مطولاً) السرقة / الإيداع</div>
+        <div><kbd>F</kbd> ركوب / نزول السيارة</div>
+        <div><kbd>Space</kbd> فرامل اليد</div>
+        <div><kbd>H</kbd> البوق</div>
+        <div><kbd>R</kbd> المطر &nbsp; <kbd>M</kbd> الصوت</div>
+      </div>
+      <p class="tip">💡 الأزقة الضيقة بين المباني لا تدخلها سيارات الشرطة. ابتعد عن أنظارهم لتختفي النجوم، ولا يمكنك الإيداع وأنت مطلوب.</p>
+      <button id="startBtn">ابدأ اللعب</button>
+    </div>
+  </div>
+
+  <div id="busted" class="overlay hidden">
+    <div class="card">
+      <h1 class="red">تم القبض عليك!</h1>
+      <p id="bustText"></p>
+      <button id="bustBtn">العودة إلى المخبأ</button>
+    </div>
+  </div>
+
+  <div id="pause" class="overlay hidden">
+    <div class="card">
+      <h1>إيقاف مؤقت</h1>
+      <button id="resumeBtn">متابعة</button>
+    </div>
+  </div>
+
+  <div id="win" class="overlay hidden">
+    <div class="card">
+      <h1 class="gold">مبروك!</h1>
+      <p>جمعت $250,000 وأصبحت أخطر لص في المدينة. يمكنك مواصلة اللعب وتحطيم رقمك.</p>
+      <button id="winBtn">متابعة اللعب</button>
+    </div>
+  </div>
+
+  <div id="loading">جارٍ بناء المدينة…</div>
+
+  <script type="module" src="src/game.js"></script>
+</body>
+</html>
