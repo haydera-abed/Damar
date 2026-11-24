@@ -35,7 +35,7 @@ func _draw() -> void:
 		if inside:
 			var poly := _clip(pts, c, r - 3)
 			if poly.size() >= 3:
-				var base := Color("1f3d24") if b.park else Color("1a1d24")
+				var base := Color("1f3d24") if b.park else (Color("3a3022") if b.get("settlement", false) else Color("1a1d24"))
 				var bc := Vector3(b.center.x, 0, b.center.y)
 				if absf(bc.x) < Cfg.HALF and absf(bc.z) < Cfg.HALF:
 					var gc: Color = Gangs.GANGS[game.gangs.owner_of[game.gangs.district_at(bc)]].color
@@ -54,6 +54,11 @@ func _draw() -> void:
 	for m in game.gangs.members:
 		if is_instance_valid(m) and not m.dead:
 			_icon(m.global_position, c, r, Color("ff2d2d"), 3.5, "", false)
+	for st in game.land.settlements:   # المستوطنات: أيقونة القصر بلون المالك
+		var oc: Color = Color("ffd36b") if st.owner == 0 else (Color(0.6, 0.6, 0.6) if st.owner < 0 else Gangs.GANGS[st.owner].color)
+		_icon(st.plots[0].sign, c, r, oc, 5.0, str(st.level), false)
+	if game.land.home.x >= 0:
+		_icon(game.land.base_pos(), c, r, Color("7fc8ff"), 7.0, "h", true)
 	_icon(game.city.safe_pos, c, r, Color("3dff7a"), 8.0, "H", true)
 	var blink := int(game.time * 4.0) % 2 == 0
 	for car in game.cars:

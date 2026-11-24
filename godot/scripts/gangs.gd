@@ -1,21 +1,26 @@
 class_name Gangs
 extends Node
 ## العصابات والأحياء والقاعدة:
-## - المدينة 9 أحياء، كل حي تسيطر عليه عصابة. استولِ على حيّ بالقضاء على حراس رايته ثم رفع رايتك.
-## - أحياؤك تدفع ضرائب دورية (مال قذر يدخل طاولة الغسيل). من يملك وسط المدينة يصبح «عرّاب المدينة».
+## - المدينة 9 أحياء بثلاثة مستويات (كما في ROB RUN): الأطراف م1، الأحياء الوسطى م2، وسط المدينة م3.
+## - استولِ على حيّ بالقضاء على حراس رايته ثم رفع رايتك. عصابة بلا أحياء تبدأ بحي م1 فقط،
+##   وبعدها لا تتمدد إلا إلى الأحياء المجاورة لأحيائك.
+## - كل حي تملكه يسرّع غسيل أموالك: +15% لحي م1، +20% لحي م2، +30% لحي م3.
+## - من يملك وسط المدينة يصبح «الحاكم الخفي»: يأخذ ضريبة من كل حي تملكه العصابات الأخرى.
+## - أحياؤك تدفع ضرائب دورية (مال قذر يدخل طاولة الغسيل).
 ## - العصابات المنافسة تهاجم أحياءك ومخبأك؛ دافع عنها.
 ## - القاعدة: نظام أمان (يقاوم أجهزة فك الشفرة)، رفوف تخزين للغنائم، وطاولة الغسيل.
 ## - المواسم (اختياري): «مداهمة فيدرالية» كل 7 أيام لعب تعيد ضبط كل شيء وتسجّل أفضل نتيجة.
 
 const DISTRICTS := ["الميناء", "السوق القديم", "الحي الصناعي", "الكورنيش", "وسط المدينة", "حي البنوك", "المحطة", "التلال", "الجسر"]
 const CENTER := 4
+const LEVEL := [1, 2, 1, 2, 3, 2, 1, 2, 1]
+const LAUNDER_BONUS := [0.0, 0.15, 0.20, 0.30]
 const GANGS := [
 	{"name": "عصابتك", "color": Color("ff6a3d")},
 	{"name": "الأفاعي", "color": Color("3ddc6a")},
 	{"name": "ذئاب الميناء", "color": Color("ffb02e")},
 	{"name": "النسور السود", "color": Color("a46bff")},
 ]
-const SECURITY_COST := [25000, 60000, 120000]
 const STASH_CAP := 40
 const TAX_PERIOD := 120.0
 const SEASON_DAYS := 7
@@ -26,9 +31,8 @@ var flags: Array[Vector3] = []
 var _flag_cloth: Array[StandardMaterial3D] = []
 var _flag_labels: Array[Label3D] = []
 var members: Array = []             # أفراد عصابات (Robber بحالة GUARD)
-var security := 0
 var stash: Array = []
-var season_mode := false
+var season_mode := true             # المداهمة الفيدرالية الأسبوعية مفعّلة افتراضياً
 var day_count := 0
 var best_season := 0
 var _tax_t := TAX_PERIOD
@@ -104,7 +108,7 @@ func _refresh_flag(i: int) -> void:
 	var g: Dictionary = GANGS[owner_of[i]]
 	_flag_cloth[i].albedo_color = g.color
 	_flag_cloth[i].emission = g.color
-	_flag_labels[i].text = "%s\n%s" % [DISTRICTS[i], g.name]
+	_flag_labels[i].text = "%s (مستوى %d)\n%s" % [DISTRICTS[i], LEVEL[i], g.name]
 	_flag_labels[i].modulate = g.color * 1.6
 
 
@@ -125,8 +129,33 @@ func apply_mp_owners(names: Array) -> void:
 		var col := Color("ff6a3d") if mine else Color("ff3b6b")
 		_flag_cloth[i].albedo_color = col
 		_flag_cloth[i].emission = col
-		_flag_labels[i].text = "%s\n%s" % [DISTRICTS[i], n]
+		_flag_labels[i].text = "%s (مستوى %d)\n%s" % [DISTRICTS[i], LEVEL[i], n]
 		_flag_labels[i].modulate = col * 1.6
+
+
+func is_mine(i: int) -> bool:
+	if game.net.is_online():
+		return game.net.district_owner[i] == game.net.my_name
+	return owner_of[i] == 0
+
+
+## قاعدة التمدد: بلا أحياء ← حي م1 فقط، وإلا فحيّ مجاور لأحد أحيائك
+func can_challenge(i: int) -> String:
+	if owned_count() == 0:
+		return "" if LEVEL[i] == 1 else "عصابة بلا أحياء تبدأ بحي من المستوى 1 فقط"
+	for j in 9:
+		if is_mine(j) and absi(j % 3 - i % 3) + absi(j / 3 - i / 3) == 1:
+			return ""
+	return "لا يمكنك التمدد إلا إلى حي مجاور لأحيائك"
+
+
+## زيادة سرعة الغسيل من الأحياء التي تملكها
+func launder_bonus() -> float:
+	var b := 0.0
+	for i in 9:
+		if is_mine(i):
+			b += LAUNDER_BONUS[LEVEL[i]]
+	return b
 
 
 func is_godfather() -> bool:
@@ -136,7 +165,7 @@ func is_godfather() -> bool:
 
 
 func to_dict() -> Dictionary:
-	return {"owners": owner_of, "security": security, "stash": stash, "season": season_mode, "day": day_count, "best": best_season}
+	return {"owners": owner_of, "stash": stash, "season": season_mode, "day": day_count, "best": best_season, "v": 2}
 
 
 func from_dict(d: Dictionary) -> void:
@@ -144,9 +173,11 @@ func from_dict(d: Dictionary) -> void:
 		owner_of.assign(d.owners)
 		for i in 9:
 			_refresh_flag(i)
-	security = d.get("security", 0)
+	if d.has("security") and d.security > 0:        # ترحيل الحفظ القديم: مستويات الأمان ← نظام أمان + صمامات
+		game.land.security = true
+		game.land.fuses = int(d.security) - 1
 	stash.assign(d.get("stash", []))
-	season_mode = d.get("season", false)
+	season_mode = d.get("season", true) if d.get("v", 1) >= 2 else true
 	day_count = d.get("day", 0)
 	best_season = d.get("best", 0)
 
@@ -209,13 +240,16 @@ func interact(dt: float) -> String:
 			return "راية %s — حيّك (ضرائب كل دقيقتين)" % DISTRICTS[i]
 		var guards := _alive_near(flags[i], 30.0)
 		if _capture != i:
+			var why := can_challenge(i)
+			if why != "":
+				return "حي %s (مستوى %d) — %s" % [DISTRICTS[i], LEVEL[i], why]
 			if Input.is_action_just_pressed("interact"):
 				_capture = i
 				_cap_prog = 0.0
 				if guards == 0:
-					_spawn_guards(flags[i], owner_of[i], 4)
+					_spawn_guards(flags[i], owner_of[i], 2 + 2 * LEVEL[i])
 				game.set_wanted(maxi(game.wanted, 2), "⚔ اشتباك مع عصابة %s!" % GANGS[owner_of[i]].name)
-			return "اضغط E لتحدّي عصابة %s على حي %s" % [GANGS[owner_of[i]].name, DISTRICTS[i]]
+			return "اضغط E لتحدّي عصابة %s على حي %s (مستوى %d · %d حراس · غسيل +%d%%)" % [GANGS[owner_of[i]].name, DISTRICTS[i], LEVEL[i], 2 + 2 * LEVEL[i], int(LAUNDER_BONUS[LEVEL[i]] * 100)]
 		if guards > 0:
 			return "اقضِ على حراس العصابة أولاً (%d متبقٍ)" % guards
 		if Input.is_action_pressed("interact"):
@@ -237,6 +271,9 @@ func _interact_mp(p: Vector3, dt: float) -> String:
 		var owner: String = game.net.district_owner[i]
 		if owner == game.net.my_name:
 			return "راية %s — حيّك" % DISTRICTS[i]
+		var why := can_challenge(i)
+		if why != "":
+			return "حي %s (مستوى %d) — %s" % [DISTRICTS[i], LEVEL[i], why]
 		if Input.is_action_pressed("interact"):
 			_cap_prog += dt / 15.0
 			game.robbing = game.city.stores[0]
@@ -258,7 +295,7 @@ func _take(i: int) -> void:
 	_refresh_flag(i)
 	game.hud.toast("🚩 استوليت على حي %s!" % DISTRICTS[i], Color("ff6a3d"))
 	if i == CENTER:
-		game.hud.toast("👑 أصبحت «عرّاب المدينة» — ضرائب مضاعفة ×3 وسعر أفضل عند المشتري", Color("ffd36b"))
+		game.hud.toast("👑 أصبحت «الحاكم الخفي» — تأخذ ضريبة من كل أحياء العصابات الأخرى", Color("ffd36b"))
 	game.sfx.cash()
 	game.save_game()
 
@@ -274,7 +311,9 @@ func tick(dt: float) -> void:
 		var tax := 0
 		for i in 9:
 			if owner_of[i] == 0:
-				tax += 1500 * (3 if i == CENTER else 1)
+				tax += 1500 * LEVEL[i]
+			elif is_godfather():
+				tax += 1000          # ضريبة الحاكم الخفي على أحياء العصابات الأخرى
 		if tax > 0:
 			game.crime.launder_pool += tax
 			game.hud.toast("💰 ضرائب أحيائك: %s دخلت طاولة الغسيل" % Cfg.money(tax), Color("7dff9e"))
@@ -296,14 +335,10 @@ func tick(dt: float) -> void:
 	_raid_t -= dt
 	var at_risk: float = game.crime.launder_pool + stash_value()
 	if _raid_t <= 0.0 and _event.is_empty() and at_risk > 20000:
-		_raid_t = randf_range(300.0, 500.0)
-		var g2 := 1 + randi() % 3
-		_spawn_guards(game.city.safe_pos, g2, 3)
-		_event = {"kind": "raid", "t": 60.0, "gang": g2}
-		game.hud.toast("🚨 عصابة %s تداهم مخبأك بأجهزة فك الشفرة! (60 ثانية)" % GANGS[g2].name, Color("ff4b4b"))
+		start_raid()
 	if not _event.is_empty():
 		_event.t -= dt
-		var where: Vector3 = flags[_event.district] if _event.kind == "attack" else game.city.safe_pos
+		var where: Vector3 = flags[_event.district] if _event.kind == "attack" else _event.where
 		var alive := _alive_near(where, 30.0)
 		if alive == 0:
 			game.hud.toast("صددت الهجوم! ✊", Color("7dff9e"))
@@ -325,21 +360,25 @@ func _resolve_loss(where: Vector3) -> void:
 		_refresh_flag(d)
 		game.hud.toast("خسرت حي %s لصالح %s" % [DISTRICTS[d], GANGS[_event.gang].name], Color("ff6b6b"))
 	else:
-		# نظام الأمان يقاوم أجهزة فك الشفرة
-		if randf() < security * 0.3:
-			game.hud.toast("🔒 صمد نظام الأمان أمام أجهزة فك الشفرة", Color("7dff9e"))
-		else:
-			var lost: float = game.crime.launder_pool * 0.4
-			game.crime.launder_pool -= lost
-			var taken := stash.size() / 2
-			for k in taken:
-				stash.pop_back()
-			game.hud.toast("اخترقوا مخبأك: خسرت %s و%d غنيمة من الرفوف" % [Cfg.money(int(lost)), taken], Color("ff6b6b"))
+		game.land.resolve_raid(_event.decoders, GANGS[_event.gang].name)
 	for m in members.duplicate():
 		if is_instance_valid(m) and m.anchor.distance_to(where) < 30.0:
 			remove_robber(m)
 	_event = {}
 	game.save_game()
+
+
+## مداهمة عصابة لقاعدتك (منزلك على قطعة الأرض، أو المخبأ إن لم تستأجر قطعة)
+func start_raid() -> void:
+	_raid_t = randf_range(300.0, 500.0)
+	var g2 := 1 + randi() % 3
+	var where: Vector3 = game.land.base_pos()
+	var decoders := randi_range(1, 2 + owned_count() / 2 + (2 if game.land.home.x >= 0 else 0))
+	_spawn_guards(where, g2, 3)
+	_event = {"kind": "raid", "t": 60.0, "gang": g2, "where": where, "decoders": decoders}
+	if game.land.alarm:
+		game.hud.toast("🚨 جهاز الإنذار: عصابة %s تقتحم قاعدتك ومعها %d أجهزة فك شفرة! (60 ثانية)" % [GANGS[g2].name, decoders], Color("ff4b4b"))
+		game.sfx.beep(950.0, 0.3)
 
 
 func federal_raid() -> void:
@@ -352,7 +391,7 @@ func federal_raid() -> void:
 	game.crime.bag.clear()
 	game.crime.notoriety_xp = 0
 	stash.clear()
-	security = 0
+	game.land.wipe()
 	for i in 9:
 		owner_of[i] = 1 + randi() % 3
 	owner_of[district_at(game.city.safe_pos)] = 0
@@ -376,25 +415,17 @@ func open_base() -> void:
 	if cr.launder_level < 4:
 		var c: int = 50000 * cr.launder_level
 		items.append({"text": "تطوير طاولة الغسيل إلى المستوى %d — %s" % [cr.launder_level + 1, Cfg.money(c)], "enabled": game.bank >= c, "cb": func(): cr._upgrade_launder(c); open_base()})
-	if security < 3:
-		var sc: int = SECURITY_COST[security]
-		items.append({"text": "نظام أمان المستوى %d (%d%% مقاومة للمداهمات) — %s" % [security + 1, (security + 1) * 30, Cfg.money(sc)], "enabled": game.bank >= sc, "cb": _buy_security.bind(sc)})
+	items.append_array(game.land.security_items())
 	var sellable := cr.bag.filter(func(i): return i.kind != "deposit_key")
 	items.append({"text": "خزّن الغنائم على الرفوف (%d غنيمة)" % sellable.size(), "enabled": not sellable.is_empty() and stash.size() < STASH_CAP, "cb": _stash_bag})
 	items.append({"text": "خذ الغنائم من الرفوف إلى الحقيبة (%d · %s)" % [stash.size(), Cfg.money(stash_value())], "enabled": not stash.is_empty() and cr.bag.size() < Crime.BAG_SLOTS, "cb": _take_stash})
-	var sub := "قيد الغسيل: %s (%s/ث) · الحساب البنكي: %s\nالأمان: %d/3 · الرفوف: %d/%d · أحياؤك: %d/9%s" % [
-		Cfg.money(int(cr.launder_pool)), Cfg.money(int(cr.launder_rate())), Cfg.money(game.bank), security, stash.size(), STASH_CAP, owned_count(), " · 👑 عرّاب المدينة" if is_godfather() else ""]
+	var sub := "قيد الغسيل: %s (%s/ث، الأحياء +%d%%) · الحساب البنكي: %s\n%s · الرفوف: %d/%d · أحياؤك: %d/9%s" % [
+		Cfg.money(int(cr.launder_pool)), Cfg.money(int(cr.launder_rate())), int(launder_bonus() * 100), Cfg.money(game.bank), game.land.security_text(), stash.size(), STASH_CAP, owned_count(), " · 👑 الحاكم الخفي" if is_godfather() else ""]
+	sub += game.land.base_subtitle()
 	if game.wanted > 0:
 		sub += "\n⚠ الشرطة تلاحقك — لا يمكنك الإيداع الآن"
-	game.hud.open_menu("المخبأ", sub, items)
-
-
-func _buy_security(cost: int) -> void:
-	if game.bank >= cost:
-		game.bank -= cost
-		security += 1
-		game.save_game()
-	open_base()
+	items.append_array(game.land.home_items())
+	game.hud.open_menu(game.land.base_title(), sub, items)
 
 
 func _stash_bag() -> void:

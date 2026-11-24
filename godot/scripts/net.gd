@@ -30,6 +30,8 @@ var remotes := {}            # id -> RemotePlayer (عند العملاء وال�
 var states := {}             # الخادم: id -> [pos, yaw, speed, flags, model, car_xf, hp, bag]
 var wanted := {}             # الخادم: id -> {level, unseen}
 var district_owner: Array = ["", "", "", "", "", "", "", "", ""]
+var settle_owner: Array = ["", "", "", "", "", "", "", "", ""]   # مالك كل مستوطنة (اسم لاعب)
+var plot_tenant := {}                                           # "مستوطنة:قطعة" -> اسم الساكن
 var _send_t := 0.0
 var _snap_t := 0.0
 var _tax_t := 120.0
@@ -187,7 +189,7 @@ func _shared_state() -> Dictionary:
 	var cds := []
 	for t in game.crime.targets:
 		cds.append([t.cooldown, t.uses_left])
-	return {"targets": cds, "districts": district_owner}
+	return {"targets": cds, "districts": district_owner, "settle": settle_owner, "plots": plot_tenant}
 
 
 @rpc("authority", "reliable")
@@ -205,6 +207,9 @@ func welcome(id: int, pname: String, role: String, peer_dict: Dictionary, profil
 	district_owner = shared.districts
 	game.gangs.apply_mp_owners(district_owner)
 	game.on_net_joined(profile, note)
+	settle_owner = shared.get("settle", settle_owner)
+	plot_tenant = shared.get("plots", {})
+	game.land.mp_apply(settle_owner, plot_tenant)
 	joined.emit(true, note)
 	_log("welcome as %s (%s), %d peers" % [pname, role, peers.size()])
 
@@ -582,6 +587,118 @@ func district(i: int, owner: String) -> void:
 	district_owner[i] = owner
 	game.gangs.apply_mp_owners(district_owner)
 	game.hud.toast("🚩 %s استولى على %s" % [owner, Gangs.DISTRICTS[i]], Color("ff6a3d"))
+
+
+# ---------------------------------------------------------------- الأراضي والمستوطنات (الخادم يحسم الملكية)
+func land_request(kind: String, s: int, p: int) -> void:
+	if is_server():
+		_land_do(my_id(), kind, s, p)
+	else:
+		_req_land.rpc_id(1, kind, s, p)
+
+
+@rpc("any_peer", "reliable")
+func _req_land(kind: String, s: int, p: int) -> void:
+	if is_server():
+		_land_do(multiplayer.get_remote_sender_id(), kind, s, p)
+
+
+func _land_do(id: int, kind: String, s: int, p: int) -> void:
+	var who: String = peers.get(id, {}).get("name", "")
+	if who == "" or s < 0 or s >= settle_owner.size():
+		return
+	var key := "%d:%d" % [s, p]
+	var reason := ""
+	match kind:
+		"rent":
+			if settle_owner[s] == "":
+				reason = "المستوطنة بلا مالك"
+			elif plot_tenant.get(key, "") != "":
+				reason = "سبقك %s إلى هذه القطعة" % plot_tenant[key]
+			elif plot_tenant.values().has(who) or settle_owner.has(who):
+				reason = "لديك قاعدة بالفعل"
+			else:
+				plot_tenant[key] = who
+		"leave":
+			if plot_tenant.get(key, "") == who:
+				plot_tenant.erase(key)
+		"buy":
+			if settle_owner[s] != "":
+				reason = "يملكها %s بالفعل" % settle_owner[s]
+			else:
+				settle_owner[s] = who
+				for k in plot_tenant.keys():          # المالك يسكن قصره ويترك قطعته المستأجرة
+					if plot_tenant[k] == who:
+						plot_tenant.erase(k)
+	if reason != "":
+		if id == my_id():
+			land_denied(kind, s, reason)
+		else:
+			land_denied.rpc_id(id, kind, s, reason)
+		return
+	_log("land %s %s by %s" % [kind, key, who])
+	land_state.rpc(settle_owner, plot_tenant)
+	if mode == Mode.HOST or mode == Mode.SERVER:
+		land_state(settle_owner, plot_tenant)
+
+
+@rpc("authority", "reliable")
+func land_state(so: Array, pt: Dictionary) -> void:
+	settle_owner = so
+	plot_tenant = pt
+	var before: Vector2i = game.land.home
+	game.land.mp_apply(so, pt)
+	if game.land.home != before and game.land.home.x >= 0:
+		game.hud.toast("🏠 قاعدتك الآن في %s" % game.land.settlements[game.land.home.x].name, Color("7dff9e"))
+		game.save_game()
+
+
+@rpc("authority", "reliable")
+func land_denied(kind: String, s: int, reason: String) -> void:
+	var lvl: int = game.land.settlements[s].level
+	if kind == "rent":
+		game.land.plot_titles[lvl] += 1             # إرجاع الوثيقة
+	elif kind == "buy":
+		game.land.settle_titles[lvl] += 1
+	game.hud.toast("تعذّر: " + reason + " (أُعيدت إليك الوثيقة)", Color("ff6b6b"))
+
+
+## ضريبة الساكن تذهب إلى مالك المستوطنة (إن كان متصلاً)
+func land_tax(owner_name: String, amount: int) -> void:
+	if amount <= 0:
+		return
+	if is_server():
+		_route_land_tax(owner_name, amount, my_name)
+	else:
+		_req_land_tax.rpc_id(1, owner_name, amount)
+
+
+@rpc("any_peer", "reliable", "call_remote", 2)
+func _req_land_tax(owner_name: String, amount: int) -> void:
+	if is_server():
+		_route_land_tax(owner_name, amount, peers.get(multiplayer.get_remote_sender_id(), {}).get("name", ""))
+
+
+func _route_land_tax(owner_name: String, amount: int, from: String) -> void:
+	for pid in peers:
+		if peers[pid].name == owner_name:
+			if pid == my_id():
+				land_rent(amount, from)
+			else:
+				land_rent.rpc_id(pid, amount, from)
+			return
+
+
+var _rent_acc := 0
+var rent_total := 0            # مجموع ضرائب السكان المستلمة (للإحصاء والاختبار)
+@rpc("authority", "reliable", "call_remote", 2)
+func land_rent(amount: int, _from: String) -> void:
+	game.bank += amount
+	_rent_acc += amount
+	rent_total += amount
+	if _rent_acc >= 1000:
+		game.hud.toast("🏛 ضرائب سكان مستوطنتك: +%s" % Cfg.money(_rent_acc), Color("7dff9e"))
+		_rent_acc = 0
 
 
 # ---------------------------------------------------------------- تغيير الدور

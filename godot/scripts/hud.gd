@@ -111,6 +111,9 @@ func _bar(color: Color, w := 200.0, h := 8.0, parent: Node = null) -> ProgressBa
 func _place(c: Control, preset: int, offset: Vector2) -> void:
 	c.set_anchors_and_offsets_preset(preset, Control.PRESET_MODE_MINSIZE)
 	c.position += offset
+	# اللوحات الملتصقة باليمين تكبر نحو اليسار عندما يطول نصها (بدل أن تخرج من الشاشة)
+	if preset in [Control.PRESET_TOP_RIGHT, Control.PRESET_BOTTOM_RIGHT, Control.PRESET_CENTER_RIGHT]:
+		c.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 
 
 # ---------------------------------------------------------------- الواجهة
@@ -409,7 +412,7 @@ func refresh_settings() -> void:
 	_settings_btns["weather"].text = "الطقس: " + WorldEnv.WEATHER_NAMES[game.world.weather]
 	_settings_btns["time"].text = "الوقت: %s  (+3 ساعات)" % game.world.clock_text()
 	_settings_btns["cycle"].text = "دورة الليل والنهار: " + ("تعمل" if game.world.cycle_enabled else "متوقفة")
-	_settings_btns["season"].text = "المواسم (مداهمة فيدرالية كل 7 أيام): " + ("مفعّلة · اليوم %d" % (game.gangs.day_count + 1) if game.gangs.season_mode else "متوقفة")
+	_settings_btns["season"].text = "المداهمة الفيدرالية (كل 7 أيام لعب): " + ("مفعّلة · بعد %d أيام" % (Gangs.SEASON_DAYS - game.gangs.day_count) if game.gangs.season_mode else "متوقفة")
 
 
 func _edit(ph: String, txt: String, w: float) -> LineEdit:
@@ -526,7 +529,10 @@ func refresh(dt: float, hint: String) -> void:
 	launder_l.text = ("🧼 قيد الغسيل: %s" % Cfg.money(int(cr.launder_pool))) if cr.launder_pool > 0 else ""
 	var w: Weapons = game.weapons
 	var wtxt := "بلا سلاح" if w.current == "" else "%s · %d طلقة" % [Weapons.CATALOG[w.current].name, w.ammo]
-	info_l.text = "%s   🎒 %d/%d (%s)\n⭐ السمعة %d (+%d%%)   🔫 %s\n🚩 أحياؤك %d/9%s" % ["🥷 ملثّم" if cr.masked else "👤 مكشوف", cr.bag.size(), Crime.BAG_SLOTS, Cfg.money(cr.bag_value()), cr.notoriety_level(), int(cr.fence_bonus() * 100), wtxt, game.gangs.owned_count(), "  👑 عرّاب المدينة" if game.gangs.is_godfather() else ""]
+	info_l.text = "%s   🎒 %d/%d (%s)\n⭐ السمعة %d (+%d%%)   🔫 %s\n🚩 أحياؤك %d/9%s" % ["🥷 ملثّم" if cr.masked else "👤 مكشوف", cr.bag.size(), Crime.BAG_SLOTS, Cfg.money(cr.bag_value()), cr.notoriety_level(), int(cr.fence_bonus() * 100), wtxt, game.gangs.owned_count(), "  👑 الحاكم الخفي" if game.gangs.is_godfather() else ""]
+	var ld: Land = game.land
+	info_l.text += "\n🏠 %s · 📄 %d%s" % [ld.settlements[ld.home.x].name if ld.home.x >= 0 else "الموتيل (بلا أرض)", ld.docs,
+		("   🏛 المداهمة الفيدرالية بعد %d أيام" % (Gangs.SEASON_DAYS - game.gangs.day_count)) if game.gangs.season_mode else ""]
 	health_bar.value = game.player.health / game.player.max_health
 	if game.cop.on_duty:
 		info_l.text = "🚔 مناوبة — %s · اعتقالات %d · %s\n🔫 %s" % [game.cop.rank_name(), game.cop.shift_arrests, Cfg.money(game.cop.shift_pay), wtxt]

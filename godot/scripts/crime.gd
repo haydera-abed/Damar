@@ -174,7 +174,7 @@ func notoriety_level() -> int:
 func fence_bonus() -> float:
 	var b: float = NOTORIETY_BONUS[notoriety_level() - 1]
 	if game.gangs != null and game.gangs.is_godfather():
-		b += 0.10        # عرّاب المدينة
+		b += 0.10        # الحاكم الخفي
 	return b
 
 
@@ -190,7 +190,8 @@ func count_loot(kind: String) -> int:
 
 
 func launder_rate() -> float:
-	return LAUNDER_BASE_RATE * launder_level
+	var bonus: float = game.gangs.launder_bonus() if game.gangs != null else 0.0
+	return LAUNDER_BASE_RATE * launder_level * (1.0 + bonus)
 
 
 func lose_bag() -> int:
@@ -235,7 +236,10 @@ func tick(dt: float) -> void:
 	if launder_pool > 0.0:
 		var amt := minf(launder_pool, launder_rate() * dt)
 		launder_pool -= amt
-		game.bank += int(round(amt))
+		var cut: float = amt * game.land.tenant_tax() if game.land != null else 0.0   # ضريبة مالك المستوطنة على غسيل سكانها
+		if cut > 0.0:
+			game.land.pay_tax(cut)
+		game.bank += int(round(amt - cut))
 		if launder_pool <= 0.5:
 			launder_pool = 0.0
 			game.hud.toast("اكتمل غسيل الأموال 🧼 — المال في حسابك البنكي", Color("7dff9e"))
@@ -363,6 +367,7 @@ func _complete(t: Target) -> void:
 	game.last_seen = 0.0
 	game.hud.toast("+%s %s في الحقيبة  (%d/%d)" % [Cfg.money(total), t.loot_name, bag.size(), BAG_SLOTS], Color("7dff9e"))
 	game.sfx.cash()
+	game.land.on_robbery(total)
 
 
 func _sell_bag() -> void:
@@ -425,7 +430,8 @@ func open_market() -> void:
 			var owned: bool = game.weapons.owned.has(w)
 			items.append({"text": "%s — %s %s" % [wd.name, Cfg.money(wd.price), "(تملكه)" if owned else ""], "enabled": not owned and game.cash + game.bank >= wd.price, "cb": _buy_weapon.bind(w)})
 	items.append({"text": "ذخيرة ×60 — $1,500", "enabled": game.cash + game.bank >= 1500, "cb": _buy_ammo})
-	game.hud.open_menu("السوق السوداء", "يُدفع من النقود القذرة أولاً ثم من الحساب البنكي. لديك: %s نقداً · %s في البنك" % [Cfg.money(game.cash), Cfg.money(game.bank)], items)
+	items.append_array(game.land.market_items())
+	game.hud.open_menu("السوق السوداء", "يُدفع من النقود القذرة أولاً ثم من الحساب البنكي. لديك: %s نقداً · %s في البنك · 📄 %d مستندات" % [Cfg.money(game.cash), Cfg.money(game.bank), game.land.docs], items)
 
 
 func _pay(amount: int) -> bool:

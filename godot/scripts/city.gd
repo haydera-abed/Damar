@@ -25,6 +25,7 @@ var safe_ring: MeshInstance3D
 var blocks: Array[Dictionary] = []   # {center: Vector2, park: bool} للخريطة المصغّرة
 var detail_range := 200.0            # مدى رؤية الواجهات التفصيلية (حسب الجودة)
 var buildings: Array[Dictionary] = []  # {center, half, floors, front}
+var settlement_blocks: Array[Dictionary] = []  # مربع لكل حي تُبنى عليه مستوطنة: {center: Vector3, district: int, block}
 var props: Props
 
 var rng := RandomNumberGenerator.new()
@@ -174,6 +175,18 @@ func _build_blocks() -> void:
 	grass.roughness = 1.0
 
 	var lots: Array[Dictionary] = []
+	# مربع سكني واحد لكل حي (الأحياء 3×3 كل منها 2×2 مربعات) يُترك فارغاً للمستوطنة
+	var settle := {}
+	for d in 9:
+		var dx := d % 3
+		var dz := d / 3
+		var cand: Array[Vector2i] = []
+		for ox in 2:
+			for oz in 2:
+				var b := Vector2i(dx * 2 + ox, dz * 2 + oz)
+				if b != Vector2i(0, 0) and b != Vector2i(0, 1) and b != Vector2i(1, 0):
+					cand.append(b)
+		settle[cand[rng.randi() % cand.size()]] = d
 	for bi in range(-2, Cfg.N + 2):
 		for bj in range(-2, Cfg.N + 2):
 			var cx := (bi + 0.5) * Cfg.CELL - Cfg.HALF
@@ -181,6 +194,8 @@ func _build_blocks() -> void:
 			var inner := bi >= 0 and bi < Cfg.N and bj >= 0 and bj < Cfg.N
 			var ring1 := not inner and bi >= -1 and bi <= Cfg.N and bj >= -1 and bj <= Cfg.N
 			var park := inner and not (bi == 0 and bj == 0) and rng.randf() < 0.08
+			if settle.has(Vector2i(bi, bj)):
+				park = false
 			if not inner and not ring1:
 				# الحلقة الثانية: أفق أبراج بعيدة خفيفة (خارج حدود اللعب)
 				for sx in [-1, 1]:
@@ -205,6 +220,10 @@ func _build_blocks() -> void:
 				_add_box(Vector3(cx, 0.09, cz + s * (Cfg.BLOCK / 2.0 - 0.15)), Vector3(Cfg.BLOCK - 0.6, 0.18, 0.3), curb, false, false)
 			if park:
 				_add_box(Vector3(cx, 0.19, cz), Vector3(Cfg.BLOCK - 6, 0.08, Cfg.BLOCK - 6), grass, false, false)
+				continue
+			if settle.has(Vector2i(bi, bj)):
+				settlement_blocks.append({"center": Vector3(cx, 0, cz), "district": settle[Vector2i(bi, bj)], "block": Vector2i(bi, bj)})
+				blocks[blocks.size() - 1]["settlement"] = true
 				continue
 			for sx in [-1, 1]:
 				for sz in [-1, 1]:
