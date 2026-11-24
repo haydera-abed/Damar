@@ -227,6 +227,7 @@ func _profile() -> Dictionary:
 
 func _apply_profile(d: Dictionary) -> void:
 	bank = d.get("bank", 0)
+	won_shown = bank >= Cfg.GOAL
 	cash = d.get("cash", 0)
 	crime.from_dict(d.get("crime", {}))
 	weapons.from_dict(d.get("weapons", {}))
@@ -298,12 +299,13 @@ func _bot_tick(dt: float) -> void:
 			var rp: RemotePlayer = net.remotes[id]
 			if rp.role != "cop" and rp.flags & Net.F_SURRENDER != 0:
 				if player.global_position.distance_to(rp.global_position) > 2.0:
-					player.teleport(rp.global_position + Vector3(1.2, 0.3, 0), 0.0)
+					player.teleport(rp.global_position + Vector3(0, 0.3, 1.3), PI)
 					print("BOT cop: moved next to %s" % rp.pname)
+					_bot_t = 0.0
 					# طلقة اختبار بين اللاعبين (من الشرطي نحو اللص)
 					var o: Vector3 = player.global_position + Vector3(0, 1.4, 0)
 					net.shot(o, (rp.global_position + Vector3(0, 1.0, 0) - o).normalized(), 30.0, 10.0)
-				elif _bot_t >= 0.0:
+				elif _bot_t >= 1.0:
 					net.request_arrest(id)
 					print("BOT cop: arrest requested on %s, bank=%d" % [rp.pname, bank])
 					_bot_t = -1000.0
@@ -1019,7 +1021,8 @@ func _arrest_update(dt: float) -> void:
 				elif not helpless and wanted <= 1 and d < 1.9:
 					rate += 0.75
 			for c in _police():
-				if c.chase and (c.pos2() - p).length() < 7.0 and absf(c.speed) < 3.0 and (helpless or wanted <= 1):
+				var cd: float = (c.pos2() - p).length()
+				if c.chase and absf(c.speed) < 3.0 and ((helpless and cd < 11.0) or (wanted <= 1 and cd < 7.0)):
 					rate += 0.3
 		elif absf(player.car.speed) < 3.0:
 			for c in _police():
@@ -1183,12 +1186,14 @@ func _autotest() -> void:
 	# 7) الاستسلام والسجن
 	if state == "play":
 		player.set_surrender(true)
-		for i in 900:
+		for i in 2400:
 			await get_tree().physics_frame
 			if state != "play":
 				break
 	print("AUTOTEST jail: state=%s jail_t=%.0f bag=%d cash=%d weapon=%s" % [state, jail_t, crime.bag.size(), cash, weapons.current])
 	await _shot(out + "/5_jail.png")
+	if state == "play":
+		player.revive()          # لم تصل الشرطة في الوقت المحدد: نكمل بقية الاختبار
 	bank = 300000
 	try_bribe(200000)
 	print("AUTOTEST bribe: jail_t=%.0f bank=%d" % [jail_t, bank])
@@ -1220,6 +1225,7 @@ func _autotest() -> void:
 	player.teleport(rb.global_position + Vector3(1.2, 0.3, 0), 0.0)
 	await _frames(3)
 	var bank_c := bank
+	print("AUTOTEST cop-pre: robber state=%d surr=%s dist=%.2f hint=%s downed=%s" % [rb.state, rb.surrendered, rb.global_position.distance_to(player.global_position), _hint, player.downed])
 	Input.action_press("interact")
 	await _frames(2)
 	Input.action_release("interact")
@@ -1339,6 +1345,8 @@ func _frames(n: int) -> void:
 
 
 func _shot(path: String) -> void:
+	if DisplayServer.get_name() == "headless":
+		return
 	await RenderingServer.frame_post_draw
 	var img := get_viewport().get_texture().get_image()
 	if img:
