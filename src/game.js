@@ -8,6 +8,9 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 // ------------------------------------------------------------------ إعدادات
 const N = 6;                 // عدد المربعات السكنية في كل اتجاه
@@ -27,7 +30,7 @@ const STORE_TYPES = {
   bank:  { name: 'البنك المركزي', value: [30000, 60000], time: 10, heat: 5, cd: 200, color: 0x45ff8a, h: 16 },
 };
 const STORE_LIST = ['bank', 'jewel', 'jewel', 'gas', 'gas', 'gas', 'shop', 'shop', 'shop', 'shop', 'shop', 'shop'];
-const CIV_COLORS = [0x8a1c1c, 0x1d3f8a, 0xc9c9c9, 0x1e1e1e, 0xe8e8e8, 0x2a6b3a, 0x6b4a1d, 0xb8860b, 0x4b0f5a, 0x555b66, 0x0f5f6b];
+const CAR_MODELS = ['sedan', 'sedan_sports', 'suv', 'suv_luxury', 'taxi', 'van', 'hatchback_sports', 'delivery_van'];
 
 // ------------------------------------------------------------------ أدوات
 function mulberry32(a) {
@@ -187,15 +190,57 @@ function signTex(text, color) {
 // انتظر الخط العربي لكتابة اللافتات
 try { await Promise.race([document.fonts.load('900 64px Cairo'), new Promise((r) => setTimeout(r, 1500))]); } catch (e) { /* يكفي الخط الاحتياطي */ }
 
+// ------------------------------------------------------------------ تحميل النماذج ثلاثية الأبعاد
+const MODELS = {};
+{
+  const loader = new GLTFLoader(); loader.setMeshoptDecoder(MeshoptDecoder);
+  const list = [...CAR_MODELS, 'police_car', 'worker', 'tree_oak', 'tree_pine'];
+  let done = 0;
+  try {
+    await Promise.all(list.map(async (n) => {
+      MODELS[n] = await loader.loadAsync(`assets/models/${n}.glb`);
+      document.getElementById('loading').textContent = `جارٍ تحميل النماذج… ${++done}/${list.length}`;
+    }));
+  } catch (e) {
+    document.getElementById('loading').innerHTML = 'تعذّر تحميل ملفات اللعبة.<br>شغّلها عبر start.bat أو خادم محلي ولا تفتح index.html مباشرة.';
+    throw e;
+  }
+  // الأشجار مصنوعة بمواد غير مضاءة؛ نحوّلها لمواد تتأثر بإضاءة الليل
+  for (const n of ['tree_oak', 'tree_pine']) MODELS[n].scene.traverse((m) => {
+    if (m.isMesh) { m.castShadow = true; if (m.material.isMeshBasicMaterial) m.material = new THREE.MeshStandardMaterial({ color: m.material.color.clone().multiplyScalar(0.8), map: m.material.map, roughness: 0.95, envMapIntensity: 0.15 }); }
+  });
+}
+const treeScale = (() => { const b = new THREE.Box3().setFromObject(MODELS.tree_oak.scene); return 6.5 / (b.max.y - b.min.y); })();
+
 // ------------------------------------------------------------------ مواد
 const std = (p) => new THREE.MeshStandardMaterial({ envMapIntensity: 0.15, ...p });
 const asphaltTex = canvasTex(noiseCanvas(256, 40, 22, 7));
 asphaltTex.repeat.set(160, 160);
 const concreteTex = canvasTex(noiseCanvas(256, 92, 26, 9));
 concreteTex.repeat.set(6, 6);
+// خرائط نتوءات حقيقية (CC0) + خريطة بِرَك ماء للأسفلت المبلل
+const texLoader = new THREE.TextureLoader();
+const normalTex = async (name, rep) => {
+  const t = await texLoader.loadAsync(`assets/textures/${name}.webp`);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rep, rep); t.anisotropy = MAX_ANISO; return t;
+};
+const [asphaltN, pavingN, plasterN] = await Promise.all([normalTex('asphalt_normal', 700), normalTex('paving_normal', 10), normalTex('plaster_normal', 8)]);
+const puddleTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 512; const g = c.getContext('2d'); const r = mulberry32(99);
+  g.fillStyle = 'rgb(0,190,0)'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 70; i++) {
+    const x = r() * 512, y = r() * 512, rad = 10 + r() * 55;
+    for (const [ox, oy] of [[0, 0], [512, 0], [-512, 0], [0, 512], [0, -512]]) {
+      const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, rad);
+      gr.addColorStop(0, 'rgba(0,25,0,0.95)'); gr.addColorStop(0.6, 'rgba(0,40,0,0.7)'); gr.addColorStop(1, 'rgba(0,190,0,0)');
+      g.fillStyle = gr; g.beginPath(); g.ellipse(x + ox, y + oy, rad * 1.6, rad, r() * 3, 0, Math.PI * 2); g.fill();
+    }
+  }
+  const t = canvasTex(c, false); t.repeat.set(30, 30); return t;
+})();
 const M = {
-  ground: std({ map: asphaltTex, roughness: 0.62, metalness: 0.05 }),
-  sidewalk: std({ map: concreteTex, color: 0x8c8c94, roughness: 0.9 }),
+  ground: std({ map: asphaltTex, normalMap: asphaltN, normalScale: new THREE.Vector2(0.22, 0.22), roughnessMap: puddleTex, roughness: 1, metalness: 0.05, envMapIntensity: 0.9 }),
+  sidewalk: std({ map: concreteTex, normalMap: pavingN, color: 0x8c8c94, roughness: 0.7, envMapIntensity: 0.5 }),
   grass: std({ color: 0x1f3a1f, roughness: 1 }),
   parapet: std({ color: 0x1c1e23, roughness: 0.9 }),
   roofUnit: std({ color: 0x55585e, roughness: 0.6, metalness: 0.4 }),
@@ -220,7 +265,7 @@ const facadeMats = [
   ['#4a4640', ['#ffd89a', '#ffc070'], 0.28, 14],
 ].map(([wall, lit, p, s]) => {
   const t = facadeTex(wall, lit, p, s);
-  return std({ map: t.map, emissiveMap: t.emissiveMap, emissive: 0xffffff, emissiveIntensity: 1.15, roughness: 0.75, metalness: 0.1, envMapIntensity: 0.35 });
+  return std({ map: t.map, emissiveMap: t.emissiveMap, normalMap: plasterN, normalScale: new THREE.Vector2(0.6, 0.6), emissive: 0xffffff, emissiveIntensity: 1.15, roughness: 0.75, metalness: 0.1, envMapIntensity: 0.35 });
 });
 const paintCache = new Map();
 function paint(color) {
@@ -445,18 +490,20 @@ function makeSafehouse(l) {
   scene.add(poles, bulbs, pools);
 }
 
-// الأشجار في الحدائق
-if (treeSpots.length) {
-  const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.18, 0.28, 3, 7), M.trunk, treeSpots.length);
-  const crowns = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(2.1, 1), M.leaves, treeSpots.length);
-  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
-  treeSpots.forEach(([x, z, k], i) => {
-    trunks.setMatrixAt(i, m4.compose(p.set(x, 1.5 * k, z), q.identity(), s.set(k, k, k)));
-    crowns.setMatrixAt(i, m4.compose(p.set(x, 3.9 * k, z), q.setFromEuler(new THREE.Euler(rand(), rand(), 0)), s.set(k, k * 1.2, k)));
-    addCollider(x, z, 0.5, 0.5, 1);
-  });
-  trunks.castShadow = crowns.castShadow = true;
-  scene.add(trunks, crowns);
+// الأشجار في الحدائق (نماذج Quaternius)
+for (const [x, z, k] of treeSpots) {
+  const t = MODELS[rand() < 0.5 ? 'tree_oak' : 'tree_pine'].scene.clone(true);
+  t.scale.setScalar(treeScale * k); t.position.set(x, 0.2, z); t.rotation.y = rand() * Math.PI * 2;
+  scene.add(t);
+  addCollider(x, z, 0.6, 0.6, 1);
+}
+
+// انعكاسات حقيقية: نلتقط بيئة المدينة الليلية نفسها كخريطة انعكاس
+{
+  scene.environment = null;
+  scene.position.set(0, -3, 0); scene.updateMatrixWorld(true);
+  scene.environment = pmrem.fromScene(scene, 0.02, 0.5, 900).texture;
+  scene.position.set(0, 0, 0); scene.updateMatrixWorld(true);
 }
 
 // ------------------------------------------------------------------ تصادمات
@@ -499,70 +546,97 @@ function segHit(ax, az, bx, bz, minH = 2, pad = 0) {
   return best;
 }
 
-// ------------------------------------------------------------------ الشخصيات
-const HUMAN_GEO = {
-  torso: new THREE.BoxGeometry(0.48, 0.62, 0.27), hips: new THREE.BoxGeometry(0.44, 0.2, 0.25),
-  head: new THREE.SphereGeometry(0.14, 14, 10), leg: new THREE.BoxGeometry(0.17, 0.9, 0.19).translate(0, -0.45, 0),
-  arm: new THREE.BoxGeometry(0.13, 0.62, 0.13).translate(0, -0.31, 0), cap: new THREE.CylinderGeometry(0.16, 0.16, 0.08, 14),
-  bag: new THREE.BoxGeometry(0.42, 0.46, 0.22),
+// ------------------------------------------------------------------ الشخصيات (نموذج Quaternius متحرك)
+const HUMAN_ROLES = {
+  thief: { Shirt: 0x1d1e22, Pants: 0x1c2638, Hair: 0x111111, Socks: 0x222222 },
+  cop: { Shirt: 0x1d3466, Pants: 0x121a2b, Hair: 0x0e1a36, Socks: 0x111111 },
 };
+const roleMats = {};
+const BAG_GEO = new THREE.BoxGeometry(0.42, 0.46, 0.22);
+let HUMAN_SCALE = 1, HUMAN_FOOT = 0;
+{ // قياس الطول الحقيقي للنموذج مرة واحدة لتحجيمه إلى 1.8 م
+  const probe = SkeletonUtils.clone(MODELS.worker.scene);
+  const mx = new THREE.AnimationMixer(probe);
+  mx.clipAction(clipOf('idle')).play(); mx.update(0.01);
+  probe.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(probe, true);
+  HUMAN_SCALE = 1.8 / (box.max.y - box.min.y); HUMAN_FOOT = -box.min.y * HUMAN_SCALE;
+}
+function clipOf(kind) {
+  const names = { idle: 'Man_Idle', walk: 'Man_Walk', run: 'Man_Run', rob: 'Man_Punch' };
+  return MODELS.worker.animations.find((a) => a.name.endsWith(names[kind]));
+}
 function makeHuman(o) {
   const g = new THREE.Group();
-  const add = (geo, mat, x, y, z, parent = g) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; parent.add(m); return m; };
-  const top = std({ color: o.top, roughness: 0.9 }), legs = std({ color: o.legs, roughness: 0.9 }), head = std({ color: o.head, roughness: 0.8 });
-  add(HUMAN_GEO.torso, top, 0, 1.32, 0);
-  add(HUMAN_GEO.hips, legs, 0, 0.98, 0);
-  add(HUMAN_GEO.head, head, 0, 1.79, 0);
-  if (o.cap) { add(HUMAN_GEO.cap, std({ color: 0x0f1a33 }), 0, 1.92, 0); }
-  const pivot = (x, y) => { const p = new THREE.Group(); p.position.set(x, y, 0); g.add(p); return p; };
-  const legL = pivot(-0.12, 0.95), legR = pivot(0.12, 0.95), armL = pivot(-0.31, 1.6), armR = pivot(0.31, 1.6);
-  add(HUMAN_GEO.leg, legs, 0, 0, 0, legL); add(HUMAN_GEO.leg, legs, 0, 0, 0, legR);
-  add(HUMAN_GEO.arm, top, 0, 0, 0, armL); add(HUMAN_GEO.arm, top, 0, 0, 0, armR);
+  const root = SkeletonUtils.clone(MODELS.worker.scene);
+  root.scale.setScalar(HUMAN_SCALE); root.position.y = HUMAN_FOOT;
+  const mats = roleMats[o.role] || (roleMats[o.role] = {});
+  root.traverse((m) => {
+    if (!m.isMesh) return;
+    m.castShadow = true; m.frustumCulled = false;
+    const name = m.material.name, col = HUMAN_ROLES[o.role][name];
+    if (!mats[name]) { mats[name] = m.material.clone(); if (col !== undefined) mats[name].color.setHex(col); mats[name].envMapIntensity = 0.2; }
+    m.material = mats[name];
+  });
+  g.add(root);
+  const mixer = new THREE.AnimationMixer(root);
+  const actions = {};
+  for (const k of ['idle', 'walk', 'run', 'rob']) actions[k] = mixer.clipAction(clipOf(k));
+  actions.idle.play();
   let bag = null;
-  if (o.bag) { bag = add(HUMAN_GEO.bag, std({ color: 0x3e4a2a, roughness: 1 }), 0, 1.3, -0.25); bag.visible = false; }
-  return { g, legL, legR, armL, armR, bag, phase: 0 };
+  if (o.bag) { bag = new THREE.Mesh(BAG_GEO, std({ color: 0x3e4a2a, roughness: 1 })); bag.position.set(0, 1.25, -0.24); bag.castShadow = true; bag.visible = false; g.add(bag); }
+  return { g, mixer, actions, cur: 'idle', bag };
 }
 function animHuman(H, speed, dt, rob = false) {
-  H.phase += dt * speed * 1.9;
-  const amp = Math.min(speed / 4.5, 1.25) * 0.75, s = Math.sin(H.phase) * amp;
-  H.legL.rotation.x = s; H.legR.rotation.x = -s;
-  if (rob) { H.armL.rotation.x = H.armR.rotation.x = -1.45; }
-  else { H.armL.rotation.x = -s * 0.9; H.armR.rotation.x = s * 0.9; }
-  H.g.position.y = Math.abs(Math.cos(H.phase)) * 0.05 * amp;
+  const want = rob ? 'rob' : speed > 5.4 ? 'run' : speed > 0.35 ? 'walk' : 'idle';
+  if (want !== H.cur) {
+    const next = H.actions[want].reset().play();
+    H.actions[H.cur].crossFadeTo(next, 0.22, false);
+    H.cur = want;
+  }
+  if (want === 'walk') H.actions.walk.timeScale = clamp(speed / 2.6, 0.6, 2.2);
+  if (want === 'run') H.actions.run.timeScale = clamp(speed / 7.5, 0.7, 1.4);
+  H.mixer.update(dt);
 }
 
-// ------------------------------------------------------------------ السيارات
-const CAR_GEO = {
-  body: new THREE.BoxGeometry(1.9, 0.55, 4.4), cabin: new THREE.BoxGeometry(1.64, 0.55, 2.15), roof: new THREE.BoxGeometry(1.6, 0.06, 1.75),
-  bumper: new THREE.BoxGeometry(1.94, 0.22, 0.2), wheel: new THREE.CylinderGeometry(0.37, 0.37, 0.28, 18).rotateZ(Math.PI / 2),
-  hub: new THREE.CylinderGeometry(0.22, 0.22, 0.3, 10).rotateZ(Math.PI / 2), light: new THREE.BoxGeometry(0.44, 0.15, 0.06), bar: new THREE.BoxGeometry(0.6, 0.15, 0.32),
-};
-function makeCarMesh(color, police) {
+// ------------------------------------------------------------------ السيارات (طقم سيارات Kenney)
+const LIGHT_GEO = new THREE.BoxGeometry(0.4, 0.13, 0.05), BAR_GEO = new THREE.BoxGeometry(0.5, 0.14, 0.3);
+const carTemplates = {};
+for (const name of [...CAR_MODELS, 'police_car']) {
+  const scene0 = MODELS[name].scene;
+  scene0.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(scene0), size = box.getSize(new THREE.Vector3());
+  const s = 4.4 / size.z;
+  scene0.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; m.material.envMapIntensity = 0.7; m.material.roughness = 0.45; m.material.metalness = 0.25; } });
+  carTemplates[name] = { scene: scene0, s, cx: (box.min.x + box.max.x) / 2, cz: (box.min.z + box.max.z) / 2, minY: box.min.y, W: size.x * s, H: size.y * s, wheelR: 0.3 * s };
+}
+function makeCarMesh(name, police) {
+  const T = carTemplates[name];
   const g = new THREE.Group();
-  const add = (geo, mat, x, y, z, parent = g) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; };
-  const body = add(CAR_GEO.body, paint(police ? 0xf0f0f0 : color), 0, 0.62, 0); body.castShadow = true;
-  if (police) { const d = add(new THREE.BoxGeometry(1.93, 0.3, 1.9), paint(0x111318), 0, 0.6, -0.1); }
-  add(CAR_GEO.cabin, M.glass, 0, 1.17, -0.25).castShadow = true;
-  add(CAR_GEO.roof, paint(police ? 0x111318 : color), 0, 1.47, -0.25);
-  add(CAR_GEO.bumper, M.bumper, 0, 0.42, 2.22); add(CAR_GEO.bumper, M.bumper, 0, 0.42, -2.22);
+  const m = T.scene.clone(true);
+  m.scale.setScalar(T.s); m.position.set(-T.cx * T.s, -T.minY * T.s, -T.cz * T.s);
+  g.add(m);
   const wheels = [], fronts = [];
-  for (const [x, z] of [[-0.93, 1.38], [0.93, 1.38], [-0.93, -1.38], [0.93, -1.38]]) {
-    const piv = new THREE.Group(); piv.position.set(x, 0.37, z); g.add(piv);
-    const w = add(CAR_GEO.wheel, M.rubber, 0, 0, 0, piv); add(CAR_GEO.hub, M.rim, 0, 0, 0, w);
-    wheels.push(w); if (z > 0) fronts.push(piv);
-  }
-  add(CAR_GEO.light, M.head, -0.62, 0.68, 2.21); add(CAR_GEO.light, M.head, 0.62, 0.68, 2.21);
+  m.traverse((o) => {
+    if (o.name && o.name.startsWith('wheel') && !(o.parent && o.parent.name.startsWith('wheel'))) {
+      o.rotation.order = 'YXZ'; wheels.push(o); if (o.name.includes('front')) fronts.push(o);
+    }
+  });
+  const add = (geo, mat, x, y, z) => { const k = new THREE.Mesh(geo, mat); k.position.set(x, y, z); g.add(k); return k; };
+  const lx = T.W * 0.3, ly = T.H * 0.36;
+  add(LIGHT_GEO, M.head, -lx, ly, 2.2); add(LIGHT_GEO, M.head, lx, ly, 2.2);
   const tailMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.2, 0.05, 0.05) });
-  add(CAR_GEO.light, tailMat, -0.62, 0.7, -2.21); add(CAR_GEO.light, tailMat, 0.62, 0.7, -2.21);
+  add(LIGHT_GEO, tailMat, -lx, ly + 0.05, -2.2); add(LIGHT_GEO, tailMat, lx, ly + 0.05, -2.2);
   let barR = null, barB = null;
   if (police) {
     barR = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.4, 0, 0) });
     barB = new THREE.MeshBasicMaterial({ color: new THREE.Color(0, 0, 0.4) });
-    add(CAR_GEO.bar, barR, -0.33, 1.58, -0.25); add(CAR_GEO.bar, barB, 0.33, 1.58, -0.25);
+    add(BAR_GEO, barR, -0.28, T.H - 0.04, -0.15); add(BAR_GEO, barB, 0.28, T.H - 0.04, -0.15);
   }
   g.rotation.order = 'YXZ';
-  return { mesh: g, wheels, fronts, tailMat, barR, barB };
+  return { mesh: g, wheels, fronts, tailMat, barR, barB, wheelR: T.wheelR };
 }
+
 
 class Car {
   constructor(x, z, h, o = {}) {
@@ -570,7 +644,7 @@ class Car {
     this.speed = 0; this.lat = 0; this.steerS = 0;
     this.police = !!o.police; this.ai = o.ai || 'parked';
     this.accel = o.accel || mr(8, 11); this.max = o.max || mr(30, 37);
-    Object.assign(this, makeCarMesh(o.color ?? CIV_COLORS[Math.floor(Math.random() * CIV_COLORS.length)], this.police));
+    Object.assign(this, makeCarMesh(this.police ? 'police_car' : (o.model || CAR_MODELS[Math.floor(Math.random() * CAR_MODELS.length)]), this.police));
     scene.add(this.mesh);
     this.input = { throttle: 0, steer: 0, brake: false, hand: false };
     this.stuckT = 0; this.reverseT = 0; this.prevN = null; this.tgtN = null;
@@ -605,7 +679,7 @@ class Car {
   sync(dt) {
     this.mesh.position.set(this.pos.x, 0, this.pos.y);
     this.mesh.rotation.set(0, this.h, clamp(-this.lat * 0.012, -0.08, 0.08));
-    for (const w of this.wheels) w.rotation.x += this.speed * dt / 0.37;
+    for (const w of this.wheels) w.rotation.x += this.speed * dt / this.wheelR;
     for (const f of this.fronts) f.rotation.y = this.steerS * 0.45;
     const braking = (this.input.throttle < 0 && this.speed > 0.5) || this.input.brake || this.input.hand;
     this.tailMat.color.setRGB(braking ? 6 : 1.2, braking ? 0.25 : 0.05, braking ? 0.25 : 0.05);
@@ -630,11 +704,11 @@ const save = () => { try { localStorage.setItem('damar_save', JSON.stringify({ b
 
 const player = {
   pos: new THREE.Vector2(safe.x, safe.z), vel: new THREE.Vector2(), facing: 0, stamina: 1, car: null,
-  H: makeHuman({ top: 0x2a2b30, legs: 0x1e2a3d, head: 0x0d0d0d, bag: true }),
+  H: makeHuman({ role: 'thief', bag: true }),
 };
 player.H.g.visible = false;
 scene.add(player.H.g);
-const COP = { top: 0x1b2f5c, legs: 0x141c2e, head: 0xc79a77, cap: true };
+const COP = { role: 'cop' };
 
 const cam = { yaw: 0, pitch: 0.3, lastMouse: -10, orbit: 0 };
 
@@ -680,7 +754,7 @@ function spawnPolice(chasing) {
 for (let i = 0; i < 16; i++) spawnTraffic('traffic');
 for (let i = 0; i < 26; i++) spawnTraffic('parked');
 { // سيارة جاهزة أمام المخبأ
-  const c = new Car(safe.x + safe.sx * 8, safe.z + 4, 0, { ai: 'parked', color: 0x8a1c1c, accel: 12, max: 38 });
+  const c = new Car(safe.x + safe.sx * 8, safe.z + 4, 0, { ai: 'parked', model: 'sedan_sports', accel: 12, max: 38 });
   cars.push(c);
 }
 for (let i = 0; i < 2; i++) spawnPolice(false);
@@ -1303,4 +1377,4 @@ $('loading').remove();
 loop();
 
 // واجهة صغيرة للاختبار والتطوير من الطرفية
-window.__damar = { step(n, dt = 0.05) { for (let i = 0; i < n; i++) { time += dt; update(dt); for (const k in pressed) delete pressed[k]; } }, get cash() { return cash; }, get bank() { return bank; }, get arrest() { return arrest; }, officers, player, cars, stores, safe, W, get state() { return state; }, setState, keys, pressed, cam, setWanted };
+window.__damar = { step(n, dt = 0.05) { for (let i = 0; i < n && state === 'play'; i++) { time += dt; update(dt); for (const k in pressed) delete pressed[k]; } }, get cash() { return cash; }, get bank() { return bank; }, get arrest() { return arrest; }, officers, player, cars, stores, safe, W, get state() { return state; }, setState, keys, pressed, cam, setWanted };
