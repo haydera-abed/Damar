@@ -534,6 +534,8 @@ func refresh(dt: float, hint: String) -> void:
 	var ld: Land = game.land
 	info_l.text += "\n🏠 %s · 📄 %d%s" % [ld.settlements[ld.home.x].name if ld.home.x >= 0 else "الموتيل (بلا أرض)", ld.docs,
 		("   🏛 المداهمة الفيدرالية بعد %d أيام" % (Gangs.SEASON_DAYS - game.gangs.day_count)) if game.gangs.season_mode else ""]
+	if HeistCityManager.has_unextracted():
+		info_l.text += "\n🎒 حقيبة السطو (غير مؤمّنة): %s — سيارة تهريب أو اخرج من المدينة" % Cfg.money(HeistCityManager.bag_value())
 	info_l.text += "\n⛓ النفوذ %d · %d سنة سجن · %s" % [PrisonManager.authority_level(), int(GameState.profile.jail_years), StateFactory.STATE_NAMES.get(GameState.state.id, "") if GameState.state else "في السجن"]
 	health_bar.value = game.player.health / game.player.max_health
 	if game.cop.on_duty:

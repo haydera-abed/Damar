@@ -26,7 +26,13 @@ var bank: int:
 	set(v):
 		EconomyManager.add_bank(v - EconomyManager.bank_balance)
 var core_owned := false        # الحفظ الأساسي صار في طبقة المنطق (لا نقرأ القيم القديمة فوقه)
-var wanted := 0
+## المطلوبية تعيش في GameState (طبقة المنطق) لتشترك فيها مدينة السطو والشرطة ثلاثية الأبعاد
+var wanted: int:
+	get:
+		return GameState.wanted
+	set(v):
+		GameState.set_wanted(v)
+var heist: HeistWorld
 var last_seen := 0.0
 var crime_cd := 0.0
 var arrest := 0.0
@@ -130,6 +136,9 @@ func _ready() -> void:
 	add_child(gangs)
 	gangs.setup()
 	land.setup()
+	heist = HeistWorld.new(self)
+	add_child(heist)
+	heist.setup()
 	extras = Extras.new(self)
 	add_child(extras)
 	extras.setup()
@@ -735,6 +744,7 @@ func _respawn(from_jail := false) -> void:
 
 func _bust() -> void:
 	var surrendered := player.surrendered
+	var heist_lost := HeistCityManager.on_player_busted_or_killed()   # مقنّع داخل المدينة ← تضيع حقيبة السطو
 	var lost_bag := crime.lose_bag()
 	var lost_cash := cash
 	var lines := []
@@ -742,6 +752,8 @@ func _bust() -> void:
 		lines.append("صودرت حقيبة الغنائم (%s)" % Cfg.money(lost_bag))
 	if lost_cash > 0:
 		lines.append("صودرت النقود القذرة (%s)" % Cfg.money(lost_cash))
+	if heist_lost > 0:
+		lines.append("ضاعت حقيبة السطو لأنك كنت مقنّعاً (%s)" % Cfg.money(heist_lost))
 	if not surrendered and weapons.current != "":
 		lines.append("صودر سلاحك: " + Weapons.CATALOG[weapons.current].name)
 		weapons.drop_current()
@@ -811,6 +823,15 @@ func _bridge_core() -> void:
 	PrisonManager.extra_wealth = func() -> int: return crime.bag_value() + gangs.stash_value() + land.house.cargo.size() * House.CRATE_SELL
 	PrisonManager.imprisoning.connect(func(_r: String) -> void: gangs.best_season = maxi(gangs.best_season, bank))
 	PrisonManager.sentenced.connect(_on_sentenced)
+	# أي رفع للمطلوبية من طبقة المنطق (مثل إنذار مدينة السطو) يحرّك الشرطة ثلاثية الأبعاد
+	GameState.wanted_changed.connect(func(level: int) -> void:
+		if level > 0:
+			last_seen = 0.0
+			for c in cars:
+				if c.ai == Car.AI.POLICE and not c.chase:
+					c.chase = true
+					c.tgt_n = Cfg.NONE
+					c.prev_n = Cfg.NONE)
 	TravelManager.travel_started.connect(_on_travel_started)
 	TravelManager.travel_finished.connect(_on_travel_finished)
 	TravelManager.travel_denied.connect(func(_h: int, why: String) -> void: hud.toast("🚫 " + why, Color("ff9b6b")))
@@ -1096,6 +1117,8 @@ func _interactions(dt: float) -> void:
 	if hint == "":
 		hint = gangs.interact(dt)
 	if hint == "":
+		hint = heist.interact(dt)
+	if hint == "":
 		hint = land.interact(dt)
 	if hint == "":
 		hint = extras.interact(dt)
@@ -1235,6 +1258,7 @@ func _physics_process(dt: float) -> void:
 	cop.tick(dt)
 	gangs.tick(dt)
 	land.tick(dt)
+	heist.tick(dt)
 	_bot_tick(dt)
 	for a in alerts.duplicate():
 		a[1] -= dt
@@ -1655,6 +1679,70 @@ func _land_test(out: String) -> void:
 	print("AUTOTEST federal: home=%s docs=%d titles=%s research=%d motel=%d security=%s owner=%s bank=%d season=%s" % [land.home, land.docs, land.plot_titles, land.researched.size(), land.motel_cash, land.security, land.owner_text(hst), bank, gangs.season_mode])
 
 
+## مدينة السطو في العالم: هدف ← حقيبة غير مؤمّنة ← سيارة تهريب؛ القبض مقنّعاً؛ الإنذار العام
+func _heist_world_test() -> void:
+	GameState.set_wanted(0)
+	var kiosk: Dictionary = heist.spots["sb_kiosk"]
+	player.teleport(kiosk.pos + Vector3(0, 0.3, 0), 0.0)
+	await _frames(3)
+	if not crime.masked:
+		crime.toggle_mask()
+	print("AUTOTEST heist-hint: hub=%s district=%s hint=%s" % [TravelManager.HUB_NAMES[TravelManager.current_hub], heist.district_at(player_pos()), _hint])
+	Input.action_press("interact")
+	await _frames(2)
+	Input.action_release("interact")
+	await _frames(int(4.6 * 60))
+	var bag_v := HeistCityManager.bag_value()
+	print("AUTOTEST heist-rob: bag=%s value=%d wanted=%d" % [HeistCityManager.bag_inventory, bag_v, wanted])
+	GameState.set_wanted(0)
+	var car_id: String = cars_for_district("sunny_beach")
+	player.teleport(heist.cars[car_id].pos + Vector3(0, 0.3, 0), 0.0)
+	await _frames(3)
+	var bag_before := crime.bag.size()
+	Input.action_press("interact")
+	await _frames(2)
+	Input.action_release("interact")
+	await _frames(int((Balance.EXTRACTION_HOLD + 0.4) * 60))
+	print("AUTOTEST heist-extract: unsecured=%s game_bag %d -> %d" % [HeistCityManager.has_unextracted(), bag_before, crime.bag.size()])
+	# سطو مقنّع ثم القبض: تضيع الحقيبة
+	GameState.set_wanted(0)
+	var cafe: Dictionary = heist.spots["pk_cafe"]
+	player.teleport(cafe.pos + Vector3(0, 0.3, 0), 0.0)
+	await _frames(3)
+	if not crime.masked:
+		crime.toggle_mask()
+	HeistCityManager.start_heist("pk_cafe")
+	heist._heist_target = "pk_cafe"
+	await _frames(int(4.6 * 60))
+	var v2 := HeistCityManager.bag_value()
+	_bust()
+	print("AUTOTEST heist-bust: had=%d lost_now=%s state=%s" % [v2, not HeistCityManager.has_unextracted(), state])
+	jail_t = 0.0
+	_on_continue()
+	await _frames(3)
+	# الهدف الكبير: إنذار عام + الشرطة
+	GameState.set_wanted(0)
+	crime.tools["drill"] = 1
+	var bank_t: Dictionary = heist.spots["dt_bank"]
+	player.teleport(bank_t.pos + Vector3(0, 0.3, 0), 0.0)
+	await _frames(3)
+	var al0 := alerts.size()
+	HeistCityManager.start_heist("dt_bank")
+	await _frames(2)
+	var chasing := cars.filter(func(c): return c.police and c.chase).size()
+	print("AUTOTEST heist-alarm: wanted=%d alerts+%d police_chasing=%d" % [wanted, alerts.size() - al0, chasing])
+	HeistCityManager.cancel_heist()
+	HeistCityManager.on_player_busted_or_killed()
+	GameState.set_wanted(0)
+
+
+func cars_for_district(d: String) -> String:
+	for c in heist.cars:
+		if HeistCityManager.fence_cars[c].district == d:
+			return c
+	return heist.cars.keys()[0]
+
+
 ## اختبار ربط اللعبة بطبقة المنطق (Autoloads)
 func _core_bridge_test() -> void:
 	await _frames(3)
@@ -1703,6 +1791,7 @@ func _core_bridge_test() -> void:
 	MotelManager.check_deliveries(int(Time.get_unix_time_from_system()) + 400)
 	close_menu()
 	print("AUTOTEST motel: decoder_via_barter=%d roulette_delta=%d quests=%d drill=%d stash_bridge=%s" % [dec, cash - c0, MotelManager.active_quests.size(), crime.tools.get("drill", 0), str(land.motel_cash == MotelManager.stash_cash)])
+	await _heist_world_test()
 	# الاستسلام للفيدراليين من الإعدادات
 	bank = 900000
 	surrender_feds()
