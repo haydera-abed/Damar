@@ -62,6 +62,17 @@ func _draw() -> void:
 	for rb in game.cop.robbers:
 		if not rb.dead and not rb.arrested:
 			_icon(rb.global_position, c, r, Color("ff2d2d") if blink else Color("ffffff"), 5.0, "", true)
+	for a in game.alerts:
+		_icon(a[0], c, r, Color("ff2d2d") if blink else Color("ffcf3a"), 7.0, "!", true)
+	var me_cop: bool = game.cop.on_duty
+	for id in game.net.remotes:
+		var rp: RemotePlayer = game.net.remotes[id]
+		if rp.role == "cop":
+			_icon(rp.global_position, c, r, Color("3d7bff"), 5.0, "", false)
+		elif rp.wanted > 0 and me_cop:
+			_icon(rp.global_position, c, r, Color("ff2d2d"), 5.5, "", true)
+		elif not me_cop:
+			_icon(rp.global_position, c, r, Color("eeeeee"), 4.0, "", false)
 	for o in game.officers:
 		_icon(o.global_position, c, r, Color("6f9bff"), 3.0, "", false)
 	# اللاعب

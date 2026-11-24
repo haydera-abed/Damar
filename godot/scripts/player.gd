@@ -39,12 +39,13 @@ func _ready() -> void:
 func _physics_process(dt: float) -> void:
 	if car != null or game == null or not game.playing():
 		return
+	var typing: bool = game.hud.chat_edit.visible
 	var yaw: float = game.cam.yaw
 	var f := Vector3(sin(yaw), 0, cos(yaw))
 	var r := Vector3(-cos(yaw), 0, sin(yaw))
 	var iv := Input.get_vector("move_left", "move_right", "move_back", "move_forward")
 	var move := (f * iv.y + r * iv.x).limit_length(1.0)
-	if robbing or downed or surrendered:
+	if robbing or downed or surrendered or typing:
 		move = Vector3.ZERO
 	# تجدد الصحة ببطء بعد 6 ثوانٍ بلا إصابة
 	_regen_t += dt

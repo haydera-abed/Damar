@@ -55,10 +55,15 @@ var height := 1.5
 var is_hero := false
 var locked := false          # مقفلة (سيارة المعرض/شاحنة المشتري): لا يمكن قيادتها
 var exhibit := false
+var puppet := false          # سيارة لاعب آخر على الشبكة (حركتها من الشبكة)
 var _paint_mats: Array[StandardMaterial3D] = []
 
 
+var model_name := ""
+
+
 func setup(model: String, is_police: bool) -> void:
+	model_name = model
 	police = is_police
 	mass = 1200.0
 	collision_layer = Cfg.LAYER_VEHICLES
@@ -273,7 +278,7 @@ func pos2() -> Vector3:
 
 # ---------------------------------------------------------------- الفيزياء
 func _physics_process(dt: float) -> void:
-	if game == null or not game.world_running():
+	if game == null or not game.world_running() or puppet:
 		return
 	exit_cd -= dt
 	match ai:

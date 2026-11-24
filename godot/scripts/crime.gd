@@ -315,9 +315,13 @@ func _target_interact(t: Target, dt: float) -> String:
 		var val := "%s – %s" % [Cfg.money(t.value.x * t.count), Cfg.money(t.value.y * t.count)]
 		var extra := "" if t.uses_left < 0 else "  [%d متبقٍ]" % t.uses_left
 		return "اضغط مطولاً E: %s  (%s)%s%s" % [t.label, val, extra, "" if masked else "  ⚠ بلا قناع!"]
+	if game.net.is_online() and not game.net.target_open(targets.find(t)):
+		return "%s — أُفرغ للتو" % t.label
 	if _active != t:
 		_active = t
 		_prog = 0.0
+		if game.net.is_online():
+			game.net.rob_started(targets.find(t), t.city_alert)
 		var heat := t.heat + (0 if masked else 1)
 		if t.city_alert:
 			game.set_wanted(5, "🚨 بلاغ للمدينة كلها: %s!" % t.label)
@@ -351,6 +355,8 @@ func _complete(t: Target) -> void:
 		t.cooldown = t.cd if t.uses_left > 0 else 240.0
 	else:
 		t.cooldown = t.cd
+	if game.net.is_online():
+		game.net.rob_done(targets.find(t))
 	_active = null
 	game.robbing = null
 	game.player.robbing = false

@@ -94,6 +94,8 @@ func _fire_player() -> void:
 		var dir: Vector3 = (aim_point - origin).normalized()
 		dir = (dir + Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * w.spread).normalized()
 		shoot(origin, dir, w.range, w.damage, game.player)
+		if game.net.is_online():
+			game.net.shot(origin, dir, w.range, w.damage)
 	game.on_gunshot(origin, true)
 
 

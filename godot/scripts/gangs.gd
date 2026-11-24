@@ -109,10 +109,29 @@ func _refresh_flag(i: int) -> void:
 
 
 func owned_count() -> int:
+	if game.net.is_online():
+		return game.net.district_owner.count(game.net.my_name)
 	return owner_of.count(0)
 
 
+## اللعب الجماعي: الأحياء يملكها لاعبون بأسمائهم
+func apply_mp_owners(names: Array) -> void:
+	for i in 9:
+		var n: String = names[i]
+		if n == "":
+			_refresh_flag(i)
+			continue
+		var mine: bool = n == game.net.my_name
+		var col := Color("ff6a3d") if mine else Color("ff3b6b")
+		_flag_cloth[i].albedo_color = col
+		_flag_cloth[i].emission = col
+		_flag_labels[i].text = "%s\n%s" % [DISTRICTS[i], n]
+		_flag_labels[i].modulate = col * 1.6
+
+
 func is_godfather() -> bool:
+	if game.net.is_online():
+		return game.net.district_owner[CENTER] == game.net.my_name
 	return owner_of[CENTER] == 0
 
 
@@ -181,6 +200,8 @@ func interact(dt: float) -> String:
 	if game.player.car != null or game.cop.on_duty:
 		return ""
 	var p: Vector3 = game.player_pos()
+	if game.net.is_online():
+		return _interact_mp(p, dt)
 	for i in 9:
 		if p.distance_to(Vector3(flags[i].x, 0, flags[i].z)) > 2.0:
 			continue
@@ -209,6 +230,28 @@ func interact(dt: float) -> String:
 	return ""
 
 
+func _interact_mp(p: Vector3, dt: float) -> String:
+	for i in 9:
+		if p.distance_to(Vector3(flags[i].x, 0, flags[i].z)) > 2.0:
+			continue
+		var owner: String = game.net.district_owner[i]
+		if owner == game.net.my_name:
+			return "راية %s — حيّك" % DISTRICTS[i]
+		if Input.is_action_pressed("interact"):
+			_cap_prog += dt / 15.0
+			game.robbing = game.city.stores[0]
+			game.rob_prog = _cap_prog
+			game.rob_label = "رفع رايتك على %s" % DISTRICTS[i]
+			if _cap_prog >= 1.0:
+				_cap_prog = 0.0
+				game.net.capture(i)
+				game.set_wanted(2)
+			return ""
+		_cap_prog = 0.0
+		return "اضغط مطولاً E للاستيلاء على %s%s" % [DISTRICTS[i], (" من " + owner) if owner != "" else ""]
+	return ""
+
+
 func _take(i: int) -> void:
 	owner_of[i] = 0
 	_capture = -1
@@ -222,7 +265,7 @@ func _take(i: int) -> void:
 
 # ---------------------------------------------------------------- الأحداث الدورية
 func tick(dt: float) -> void:
-	if game.cop.on_duty:
+	if game.cop.on_duty or game.net.is_online():
 		return
 	# الضرائب
 	_tax_t -= dt

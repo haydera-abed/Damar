@@ -39,6 +39,13 @@ var release_btn: Button
 var menu_title: Label
 var menu_sub: Label
 var menu_list: VBoxContainer
+var name_edit: LineEdit
+var ip_edit: LineEdit
+var role_btn: OptionButton
+var menu_status: Label
+var chat_box: VBoxContainer
+var chat_edit: LineEdit
+var _chat_lines: Array = []
 var _settings_btns := {}
 
 
@@ -140,6 +147,23 @@ func _build_hud() -> void:
 	goal_bar.fill_mode = ProgressBar.FILL_END_TO_BEGIN
 	hud.add_child(money)
 	_place(money, Control.PRESET_TOP_RIGHT, Vector2(-16, 16))
+
+	# الدردشة (فوق الخريطة المصغّرة)
+	chat_box = VBoxContainer.new()
+	chat_box.custom_minimum_size = Vector2(420, 0)
+	chat_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.add_child(chat_box)
+	chat_box.anchor_left = 0.0
+	chat_box.anchor_top = 1.0
+	chat_box.anchor_bottom = 1.0
+	chat_box.offset_left = 16
+	chat_box.offset_top = -420
+	chat_box.offset_bottom = -240
+	chat_box.alignment = BoxContainer.ALIGNMENT_END
+	chat_edit = _edit("اكتب رسالة… (Enter)", "", 420)
+	chat_edit.visible = false
+	chat_edit.text_submitted.connect(_on_chat_submit)
+	chat_box.add_child(chat_edit)
 
 	# معلومات اللص (تحت المال)
 	var ip := PanelContainer.new()
@@ -303,7 +327,32 @@ func _build_menus() -> void:
 	gc.add_child(grid)
 	m.add_child(gc)
 	_centered(_label("💡 الغنائم تُباع للمشتري ($) خارج المدينة وأنت ملثّم، ثم تُغسل في المخبأ (H) لتصبح آمنة في حسابك البنكي. الأدوات والأسلحة من السوق السوداء.", 14, Color(1, 1, 1, 0.6), m))
-	_button("ابدأ اللعب", m, func(): start_pressed.emit())
+	_button("لعب فردي", m, func(): start_pressed.emit())
+	# --- اللعب الجماعي
+	_centered(_label("— اللعب الجماعي عبر الإنترنت —", 18, Color("9fd0ff"), m))
+	var row1 := HBoxContainer.new()
+	row1.alignment = BoxContainer.ALIGNMENT_CENTER
+	row1.add_theme_constant_override("separation", 10)
+	name_edit = _edit("اسمك", "لاعب", 170)
+	row1.add_child(name_edit)
+	role_btn = OptionButton.new()
+	role_btn.add_item("مجرم")
+	role_btn.add_item("شرطي")
+	role_btn.add_theme_font_size_override("font_size", 17)
+	row1.add_child(role_btn)
+	ip_edit = _edit("عنوان الخادم", "127.0.0.1", 170)
+	row1.add_child(ip_edit)
+	m.add_child(row1)
+	var row2 := HBoxContainer.new()
+	row2.alignment = BoxContainer.ALIGNMENT_CENTER
+	row2.add_theme_constant_override("separation", 14)
+	var hb := _button("استضافة لعبة", row2, func(): game.start_host(name_edit.text, ["criminal", "cop"][role_btn.selected]))
+	var jb := _button("انضمام", row2, _join_pressed)
+	for bb in [hb, jb]:
+		bb.add_theme_font_size_override("font_size", 19)
+		bb.add_theme_stylebox_override("normal", _style(Color("2b5bd8"), 12, Color(0.6, 0.8, 1, 0.4)))
+	m.add_child(row2)
+	menu_status = _centered(_label("", 14, Color(1, 1, 1, 0.7), m))
 
 	var b := _overlay("busted")
 	_centered(_label("تم القبض عليك!", 52, Color("ff4b4b"), b))
@@ -361,6 +410,53 @@ func refresh_settings() -> void:
 	_settings_btns["time"].text = "الوقت: %s  (+3 ساعات)" % game.world.clock_text()
 	_settings_btns["cycle"].text = "دورة الليل والنهار: " + ("تعمل" if game.world.cycle_enabled else "متوقفة")
 	_settings_btns["season"].text = "المواسم (مداهمة فيدرالية كل 7 أيام): " + ("مفعّلة · اليوم %d" % (game.gangs.day_count + 1) if game.gangs.season_mode else "متوقفة")
+
+
+func _edit(ph: String, txt: String, w: float) -> LineEdit:
+	var e := LineEdit.new()
+	e.placeholder_text = ph
+	e.text = txt
+	e.custom_minimum_size = Vector2(w, 36)
+	e.add_theme_font_size_override("font_size", 16)
+	return e
+
+
+func _join_pressed() -> void:
+	game.net.my_name = name_edit.text
+	game.net.my_role = ["criminal", "cop"][role_btn.selected]
+	game.start_join(ip_edit.text)
+
+
+func set_menu_status(t: String) -> void:
+	menu_status.text = t
+
+
+func add_chat(who: String, text: String, cop := false) -> void:
+	var l := _label("%s: %s" % [who, text], 15, Color("9fd0ff") if cop else Color.WHITE)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size = Vector2(420, 0)
+	chat_box.add_child(l)
+	chat_box.move_child(chat_edit, -1)
+	_chat_lines.append([l, 12.0])
+	if _chat_lines.size() > 7:
+		_chat_lines.pop_front()[0].queue_free()
+
+
+func open_chat() -> void:
+	if not game.net.is_online():
+		return
+	chat_edit.visible = true
+	chat_edit.grab_focus()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _on_chat_submit(t: String) -> void:
+	game.net.send_chat(t)
+	chat_edit.text = ""
+	chat_edit.visible = false
+	chat_edit.release_focus()
+	if game.state == "play":
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func show_state(s: String) -> void:
@@ -460,6 +556,9 @@ func refresh(dt: float, hint: String) -> void:
 		prog_bar.value = game.rob_prog
 	hint_l.text = hint
 	hint_l.get_parent().visible = hint != ""
+	for cl in _chat_lines:
+		cl[1] -= dt
+		cl[0].modulate.a = clampf(cl[1] / 2.0, 0.0, 1.0) if not chat_edit.visible else 1.0
 	if _toast_t > 0.0:
 		_toast_t -= dt
 		toast_l.modulate.a = clampf(_toast_t / 0.3, 0.0, 1.0)

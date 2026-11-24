@@ -103,6 +103,10 @@ func _equip() -> void:
 
 
 func start_duty() -> void:
+	if game.net.is_online() and game.net.my_role != "cop":
+		game.net.request_role("cop")       # الخادم يتحقق من عدد مقاعد الشرطة
+		game.close_menu()
+		return
 	on_duty = true
 	shift_pay = 0
 	shift_arrests = 0
@@ -120,7 +124,21 @@ func start_duty() -> void:
 	game.save_game()
 
 
+func on_role_result(ok: bool, role: String) -> void:
+	if not ok:
+		game.hud.toast("لا يمكن: مقاعد الشرطة ممتلئة أو أنت مطلوب", Color("ff9b3b"))
+		return
+	if role == "cop" and not on_duty:
+		start_duty()
+	elif role == "criminal" and on_duty:
+		end_duty()
+
+
 func end_duty() -> void:
+	if game.net.is_online() and game.net.my_role == "cop":
+		game.net.request_role("criminal")
+		game.close_menu()
+		return
 	on_duty = false
 	game.weapons.from_dict(_saved_weapons)
 	game.player.max_health = 100.0
@@ -137,6 +155,8 @@ func end_duty() -> void:
 func tick(dt: float) -> void:
 	if not on_duty:
 		return
+	if game.net.is_online():
+		return                     # في اللعب الجماعي اللصوص لاعبون حقيقيون
 	_spawn_t -= dt
 	if _spawn_t <= 0.0 and robbers.size() < MAX_ROBBERS:
 		_spawn_t = randf_range(30.0, 55.0)
@@ -167,6 +187,12 @@ func _spawn_robber() -> void:
 func interact(_dt: float) -> String:
 	if game.player.car != null:
 		return ""
+	if game.net.is_online():
+		var target: int = game.net.nearest_arrestable(game.player.global_position)
+		if target >= 0:
+			if Input.is_action_just_pressed("interact"):
+				game.net.request_arrest(target)
+			return "اضغط E لتقييد %s بالأصفاد" % game.net.peers.get(target, {}).get("name", "")
 	for r in robbers:
 		if (r.surrendered or r.downed) and not r.arrested and not r.dead and r.global_position.distance_to(game.player.global_position) < 2.2:
 			if Input.is_action_just_pressed("interact"):

@@ -29,6 +29,10 @@ var crime: Crime
 var cop: Cop
 var gangs: Gangs
 var extras: Extras
+var net: Net
+var alerts: Array = []          # بلاغات للشرطة على الخريطة [موقع، وقت]
+var _bot := ""
+var _bot_t := 0.0
 var weapons: Weapons
 var civilians: Array[Civilian] = []
 var rob_label := ""
@@ -51,6 +55,9 @@ var _space: PhysicsDirectSpaceState3D
 
 
 func _ready() -> void:
+	net = Net.new(self)
+	net.name = "Net"
+	add_child(net)
 	_load()
 	_build_environment()
 	quality = _load_quality()
@@ -122,13 +129,186 @@ func _ready() -> void:
 	hud.continue_pressed.connect(_on_continue)
 	set_state("menu")
 
-	if "--autotest" in OS.get_cmdline_user_args():
+	var args := OS.get_cmdline_user_args()
+	if "--server" in args:
+		_start_dedicated(args)
+	elif _arg(args, "--join") != "":
+		net.my_name = _arg(args, "--name", "لاعب")
+		net.my_role = _arg(args, "--role", "criminal")
+		_bot = _arg(args, "--bot")
+		net.log_events = true
+		start_join(_arg(args, "--join"), int(_arg(args, "--port", str(Net.PORT))))
+	elif "--autotest" in args:
 		_autotest()
 	elif "--envshots" in OS.get_cmdline_user_args():
 		_envshots()
 
 
 # ---------------------------------------------------------------- واجهة للسكربتات الأخرى
+# ---------------------------------------------------------------- اللعب الجماعي
+func _arg(args: PackedStringArray, key: String, def := "") -> String:
+	for a in args:
+		if a.begins_with(key + "="):
+			return a.substr(key.length() + 1)
+	return def
+
+
+func _start_dedicated(args: PackedStringArray) -> void:
+	var port := int(_arg(args, "--port", str(Net.PORT)))
+	var err := net.host(port, true)
+	if err != "":
+		print("SERVER ERROR: ", err)
+		get_tree().quit(1)
+		return
+	_go_online()
+	state = "server"
+	hud.visible = false
+	player.visible = false
+	player.process_mode = Node.PROCESS_MODE_DISABLED
+	player.global_position = Vector3(0, -50, 0)
+	print("SERVER READY port=%d" % port)
+
+
+func start_host(pname: String, role: String, port := Net.PORT) -> void:
+	net.my_name = pname
+	net.my_role = role
+	var err := net.host(port, false)
+	if err != "":
+		hud.toast(err, Color("ff6b6b"))
+		return
+	_go_online()
+	_on_start()
+	if role == "cop":
+		cop.start_duty()
+	hud.toast("تستضيف لعبة على المنفذ %d — أعطِ أصدقاءك عنوان IP جهازك" % port, Color("9fd0ff"))
+
+
+func start_join(ip: String, port := Net.PORT) -> void:
+	var err := net.join(ip, port)
+	if err != "":
+		hud.toast(err, Color("ff6b6b"))
+		return
+	hud.set_menu_status("جارٍ الاتصال بـ %s…" % ip)
+
+
+## إيقاف ما لا يناسب اللعب الجماعي: الشرطة الآلية (الشرطة لاعبون حقيقيون)
+func _go_online() -> void:
+	for c in _police():
+		_remove_car(c)
+	for o in officers.duplicate():
+		o.queue_free()
+	officers.clear()
+
+
+func on_net_joined(profile: Dictionary, note: String) -> void:
+	_go_online()
+	if not profile.is_empty():
+		_apply_profile(profile)
+		_new_save = false
+	_on_start()
+	if net.my_role == "cop":
+		cop.start_duty()
+	if note != "":
+		hud.toast(note, Color("ff9b3b"))
+	hud.toast("دخلت المدينة كـ %s — %d لاعب متصل" % [net.my_name, net.peers.size()], Color("9fd0ff"))
+
+
+func on_net_lost(msg: String) -> void:
+	if state == "server":
+		return
+	cop.on_duty = false
+	set_state("menu")
+	hud.toast(msg, Color("ff6b6b"))
+
+
+func _profile() -> Dictionary:
+	return {"bank": bank, "cash": cash, "crime": crime.to_dict(), "weapons": weapons.to_dict() if not cop.on_duty else cop._saved_weapons, "cop": cop.to_dict()}
+
+
+func _apply_profile(d: Dictionary) -> void:
+	bank = d.get("bank", 0)
+	cash = d.get("cash", 0)
+	crime.from_dict(d.get("crime", {}))
+	weapons.from_dict(d.get("weapons", {}))
+	cop.from_dict(d.get("cop", {}))
+
+
+func local_net_state() -> Array:
+	var f := 0
+	if crime.masked:
+		f |= Net.F_MASK
+	if player.surrendered:
+		f |= Net.F_SURRENDER
+	if player.downed:
+		f |= Net.F_DOWNED
+	if player.robbing:
+		f |= Net.F_ROBBING
+	if weapons.aiming:
+		f |= Net.F_AIM
+	var c := player.car
+	var p: Vector3 = c.global_position if c else player.global_position
+	var spd: float = absf(c.speed) if c else Vector2(player.velocity.x, player.velocity.z).length()
+	return [p, c.heading() if c else player.facing, spd, f, c.model_name if c else "", c.global_transform if c else Transform3D.IDENTITY, player.health, crime.bag_value()]
+
+
+func net_set_wanted(level: int) -> void:
+	if level > wanted:
+		last_seen = 0.0
+	wanted = level
+
+
+func add_alert(p: Vector3) -> void:
+	alerts.append([p, 45.0])
+
+
+func remote_cops_near(p: Vector3, r: float) -> bool:
+	for id in net.remotes:
+		var rp: RemotePlayer = net.remotes[id]
+		if rp.role == "cop" and rp.global_position.distance_to(p) < r:
+			return true
+	return false
+
+
+## روبوتات اختبار اللعب الجماعي (--bot=criminal أو --bot=cop)
+func _bot_tick(dt: float) -> void:
+	if _bot == "" or state != "play":
+		return
+	_bot_t += dt
+	if _bot == "criminal":
+		var shop: Crime.Target = crime.targets[0]
+		if _bot_t > 3.0 and _bot_t < 3.2 and not crime.masked:
+			crime.toggle_mask()
+			player.teleport(shop.pos + Vector3(0, 0.3, 0), 0.0)
+			print("BOT criminal: at %s" % shop.label)
+		if _bot_t > 3.5 and _bot_t < 12.0:
+			Input.action_press("interact")
+		if _bot_t >= 12.0 and _bot_t < 12.1:
+			Input.action_release("interact")
+			print("BOT criminal: bag=%d value=%d wanted=%d" % [crime.bag.size(), crime.bag_value(), wanted])
+		if _bot_t > 14.0 and not player.surrendered and state == "play":
+			player.set_surrender(true)
+			print("BOT criminal: surrendered, wanted=%d" % wanted)
+	elif _bot == "cop":
+		if int(_bot_t / 5.0) != int((_bot_t - dt) / 5.0) and _bot_t > 0.0:
+			var fl := []
+			for id in net.remotes:
+				fl.append("%s:%d" % [net.remotes[id].pname, net.remotes[id].flags])
+			print("BOT cop: t=%.0f state=%s remotes=%s" % [_bot_t, state, fl])
+		for id in net.remotes:
+			var rp: RemotePlayer = net.remotes[id]
+			if rp.role != "cop" and rp.flags & Net.F_SURRENDER != 0:
+				if player.global_position.distance_to(rp.global_position) > 2.0:
+					player.teleport(rp.global_position + Vector3(1.2, 0.3, 0), 0.0)
+					print("BOT cop: moved next to %s" % rp.pname)
+					# طلقة اختبار بين اللاعبين (من الشرطي نحو اللص)
+					var o: Vector3 = player.global_position + Vector3(0, 1.4, 0)
+					net.shot(o, (rp.global_position + Vector3(0, 1.0, 0) - o).normalized(), 30.0, 10.0)
+				elif _bot_t >= 0.0:
+					net.request_arrest(id)
+					print("BOT cop: arrest requested on %s, bank=%d" % [rp.pname, bank])
+					_bot_t = -1000.0
+
+
 # ---------------------------------------------------------------- أنظمة الجريمة والقتال
 func _spawn_civilians(n: int) -> void:
 	var inner := city.blocks.filter(func(b): return absf(b.center.x) < Cfg.HALF and absf(b.center.y) < Cfg.HALF)
@@ -218,7 +398,7 @@ func close_menu() -> void:
 
 
 func world_running() -> bool:
-	return state == "play" or state == "menu"
+	return state == "play" or state == "menu" or state == "server" or (net != null and net.is_online() and state != "busted")
 
 
 func playing() -> bool:
@@ -254,6 +434,8 @@ func set_wanted(level: int, msg := "") -> void:
 	if cop != null and cop.on_duty:
 		return
 	level = clampi(level, 0, 5)
+	if net != null and net.is_online():
+		net.report_crime(level)
 	if level <= wanted:
 		return
 	wanted = level
@@ -429,6 +611,12 @@ func _unhandled_input(e: InputEvent) -> void:
 	if e.is_action_pressed("pause") and state == "ui":
 		set_state("play")
 		return
+	if state == "play" and e.is_action_pressed("chat") and not hud.chat_edit.visible:
+		hud.open_chat()
+		get_viewport().set_input_as_handled()
+		return
+	if hud.chat_edit.visible:
+		return
 	if state == "play":
 		if e.is_action_pressed("mask"):
 			if cop.on_duty:
@@ -505,6 +693,7 @@ func _bust() -> void:
 	_arrested_by_surrender = surrendered
 	arrest = 0.0
 	robbing = null
+	player.revive()
 	crime.masked = false
 	player.human.set_mask(false)
 	sfx.busted()
@@ -628,6 +817,9 @@ func _save_quality() -> void:
 
 
 func _save() -> void:
+	if net != null and net.is_online():
+		net.save_profile(_profile())
+		return
 	var cf := ConfigFile.new()
 	cf.load(SAVE_PATH)
 	cf.set_value("game", "bank", bank)
@@ -746,6 +938,8 @@ func _interactions(dt: float) -> void:
 
 func _wanted_update(dt: float) -> void:
 	crime_cd -= dt
+	if net.is_online():
+		return                   # الخادم يحسب المطلوبية في اللعب الجماعي
 	if wanted <= 0:
 		return
 	var p := player_pos()
@@ -782,6 +976,8 @@ func _wanted_update(dt: float) -> void:
 
 
 func _police_manager(dt: float) -> void:
+	if net.is_online():
+		return
 	_spawn_t -= dt
 	var pol := _police()
 	if pol.size() < Cfg.POLICE_TARGET[wanted] and _spawn_t <= 0.0:
@@ -806,6 +1002,8 @@ func _arrest_update(dt: float) -> void:
 		for c in _police():
 			if c.chase and (c.pos2() - p).length() < 60.0:
 				cops_near = true
+		if net.is_online():
+			cops_near = remote_cops_near(p, 60.0)
 		if not cops_near and _down_t > 8.0:
 			player.revive()
 			player.health = 35.0
@@ -848,6 +1046,11 @@ func _physics_process(dt: float) -> void:
 		return
 	cop.tick(dt)
 	gangs.tick(dt)
+	_bot_tick(dt)
+	for a in alerts.duplicate():
+		a[1] -= dt
+		if a[1] <= 0.0:
+			alerts.erase(a)
 	weapons.tick(dt)
 	_interactions(dt)
 	_wanted_update(dt)
