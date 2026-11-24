@@ -192,7 +192,8 @@ func count_loot(kind: String) -> int:
 
 func launder_rate() -> float:
 	var bonus: float = game.gangs.launder_bonus() if game.gangs != null else 0.0
-	return LAUNDER_BASE_RATE * launder_level * (1.0 + bonus)
+	var hm: float = game.land.house.launder_mult() if game.land != null and game.land.house != null and game.land.home.x >= 0 else 1.0
+	return LAUNDER_BASE_RATE * launder_level * (1.0 + bonus) * hm
 
 
 func lose_bag() -> int:

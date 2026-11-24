@@ -417,10 +417,10 @@ func open_base() -> void:
 		items.append({"text": "تطوير طاولة الغسيل إلى المستوى %d — %s" % [cr.launder_level + 1, Cfg.money(c)], "enabled": game.bank >= c, "cb": func(): cr._upgrade_launder(c); open_base()})
 	items.append_array(game.land.security_items())
 	var sellable := cr.bag.filter(func(i): return i.kind != "deposit_key")
-	items.append({"text": "خزّن الغنائم على الرفوف (%d غنيمة)" % sellable.size(), "enabled": not sellable.is_empty() and stash.size() < STASH_CAP, "cb": _stash_bag})
+	items.append({"text": "خزّن الغنائم على الرفوف (%d غنيمة)" % sellable.size(), "enabled": not sellable.is_empty() and stash.size() < game.land.house.stash_cap(), "cb": _stash_bag})
 	items.append({"text": "خذ الغنائم من الرفوف إلى الحقيبة (%d · %s)" % [stash.size(), Cfg.money(stash_value())], "enabled": not stash.is_empty() and cr.bag.size() < Crime.BAG_SLOTS, "cb": _take_stash})
 	var sub := "قيد الغسيل: %s (%s/ث، الأحياء +%d%%) · الحساب البنكي: %s\n%s · الرفوف: %d/%d · أحياؤك: %d/9%s" % [
-		Cfg.money(int(cr.launder_pool)), Cfg.money(int(cr.launder_rate())), int(launder_bonus() * 100), Cfg.money(game.bank), game.land.security_text(), stash.size(), STASH_CAP, owned_count(), " · 👑 الحاكم الخفي" if is_godfather() else ""]
+		Cfg.money(int(cr.launder_pool)), Cfg.money(int(cr.launder_rate())), int(launder_bonus() * 100), Cfg.money(game.bank), game.land.security_text(), stash.size(), game.land.house.stash_cap(), owned_count(), " · 👑 الحاكم الخفي" if is_godfather() else ""]
 	sub += game.land.base_subtitle()
 	if game.wanted > 0:
 		sub += "\n⚠ الشرطة تلاحقك — لا يمكنك الإيداع الآن"
@@ -432,7 +432,7 @@ func _stash_bag() -> void:
 	var cr: Crime = game.crime
 	var keep: Array[Dictionary] = []
 	for it in cr.bag:
-		if it.kind == "deposit_key" or stash.size() >= STASH_CAP:
+		if it.kind == "deposit_key" or stash.size() >= game.land.house.stash_cap():
 			keep.append(it)
 		else:
 			stash.append(it)

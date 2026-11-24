@@ -11,7 +11,7 @@ extends Node
 ##   جهاز إنذار ينبّهك عند الاقتحام، وخزنة تحمي الرفوف (إلا من مفتاح رئيسي).
 ## - المداهمة الفيدرالية تصادر كل الأراضي والوثائق والمستندات.
 
-const PLOTS := 11                        # القطعة 0 = فيلا المالك، و10 قطع للإيجار
+const PLOTS := 7                         # القطعة 0 = فيلا المالك، و6 قطع كبيرة للإيجار (15×14 م: منزل + ملحق + فناء)
 const PLOT_TITLE := [{}, {"docs": 3}, {"price": 150000}, {"price": 500000}]
 const SETTLE_TITLE := [{}, {"docs": 8}, {"price": 400000}, {"price": 1200000}]
 const TENANT_TAX := [0.0, 0.05, 0.07, 0.10]
@@ -38,7 +38,10 @@ var home := Vector2i(-1, -1)     # (المستوطنة، القطعة)
 var security := false
 var fuses := 0
 var alarm := false
-var safe := false
+var safe := false                # (قديم) الخزنة صارت أثاثاً في مخطط البناء
+var house: House
+var _bushes_spawned := false
+var pickups: Array = []          # شتلات في الحدائق وشحنات سقطت على الأرض: {pos, node, kind, item, t}
 var researched := {}             # "plot1"، "settle2"… → true
 var motel_cash := 0              # نقود محفوظة عند Lenny في الموتيل (آمنة من المصادرة)
 var eviction_rights := 0
@@ -60,6 +63,7 @@ func _init(g: Node) -> void:
 # ---------------------------------------------------------------- البناء
 func setup() -> void:
 	_rng.seed = 7741
+	house = House.new(self)
 	_root = Node3D.new()
 	_root.name = "Land"
 	game.city.add_child(_root)
@@ -120,22 +124,21 @@ func _make_settlement(b: Dictionary) -> void:
 			_hbox(_root, c + n * 22.6 + Vector3(0, 1.3, 0), along * 45.6 + thick + Vector3(0, 2.6, 0), wall_m)
 	var gl: Label3D = game.crime._label("%s\n(مستوى %d · النمط %s)" % [s.name, lvl, s.layout], Color("ffd36b"), c + gate * 23.4 + Vector3(0, 4.4, 0), 90)
 	gl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	# القطع: 3 مواقع على كل جانب (12)، الوسط في جهة البوابة للبوابة، وفي الجهة المقابلة للفيلا
-	var slots: Array = [{"n": -gate, "o": 0.0}]           # 0 = الفيلا (منزل البداية)
-	for n in [-gate, side, -side, gate]:
-		for o in [-9.0, 0.0, 9.0]:
-			if o == 0.0 and (n == gate or n == -gate):
-				continue
-			slots.append({"n": n, "o": o})
+	# 6 قطع كبيرة (3 على كل جانب من الممر)، أبوابها نحو الممر، والفيلا في الطرف المقابل للبوابة
+	var inward := -gate
+	var slots: Array = [{"c": c + inward * 17.5, "face": gate}]
+	for sv in [-1, 1]:
+		for u in [-15.0, 0.0, 15.0]:
+			slots.append({"c": c + inward * u + side * (sv * 15.5), "face": -side * sv})
 	for k in slots.size():
-		var n: Vector3 = slots[k].n
-		var t := Vector3(-n.z, 0, n.x)
-		var o: float = slots[k].o
-		var face := -n                                    # الأبواب نحو الساحة
-		var pos := c + n * (18.0 if k > 0 else 18.3) + t * o + Vector3(0, 0.15, 0)
-		var sign_pos := c + n * 12.6 + t * (o + 2.9) + Vector3(0, 0.15, 0)
-		var plot := {"pos": pos, "face": face, "sign": sign_pos, "tenant": "", "house": null, "label": null, "slot": k}
-		_hbox(_root, pos - n * 0.0 + Vector3(0, 0.07, 0), Vector3(8.6, 0.05, 8.6), _mat(Color("4a4238") if k > 0 else Color("5a5144"), 1.0), false)
+		var face: Vector3 = slots[k].face
+		var lat := Vector3(-face.z, 0, face.x)
+		var pos: Vector3 = slots[k].c + Vector3(0, 0.15, 0)
+		var sign_pos := pos + face * 6.4 + lat * 5.2 if k > 0 else pos + face * 6.2 + lat * 2.6
+		var plot := {"pos": pos, "face": face, "lat": lat, "sign": sign_pos, "tenant": "", "house": null, "label": null, "slot": k}
+		if k > 0:
+			_hbox(_root, pos + Vector3(0, 0.07, 0), Vector3(absf(face.x) * 14.0 + absf(lat.x) * 15.0, 0.05, absf(face.z) * 14.0 + absf(lat.z) * 15.0), _mat(Color("4a4238"), 1.0), false)
+			_plot_fence(pos, face, lat)
 		plot.label = game.crime._label("", Color.WHITE, sign_pos + Vector3(0, 3.1, 0), 64)
 		plot.label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		_sign_post(sign_pos, face)
@@ -144,6 +147,14 @@ func _make_settlement(b: Dictionary) -> void:
 		if k == 0:
 			_build_house(plot, false, true)      # فيلا المالك (تُفتح لمالكها إن جعلها منزله)
 	settlements.append(s)
+
+
+## سياج منخفض على جانبي القطعة (الواجهة نحو الممر مفتوحة)
+func _plot_fence(pos: Vector3, face: Vector3, lat: Vector3) -> void:
+	var wood := _mat(Color("5b4630"), 0.95)
+	for zs in [-1, 1]:
+		var a: Vector3 = pos + lat * float(zs) * 7.45 + Vector3(0, 0.5, 0)
+		_hbox(_root, a, Vector3(absf(face.x) * 14.0 + absf(lat.x) * 0.1, 1.0, absf(face.z) * 14.0 + absf(lat.z) * 0.1), wood, false)
 
 
 func _sign_post(p: Vector3, face: Vector3) -> void:
@@ -178,15 +189,18 @@ var _menu_ctx := ""
 ## وأثاث يعمل (طاولة الغسيل، الرفوف، الخزنة، لوحة الأمان) في منزلك. الفيلا = قصر مالك المستوطنة.
 func _build_house(plot: Dictionary, mine: bool, villa := false) -> void:
 	_clear_house(plot)
-	var size: Vector3 = VILLA if villa else HOUSE
+	var size: Vector3 = House.TIER_SIZE[4] if villa else (house.house_size() if mine else House.TIER_SIZE[2])
 	var w := size.x
 	var hh := size.y
 	var d := size.z
 	var t := WALL_T
 	var h := Node3D.new()
 	_root.add_child(h)
-	h.position = plot.pos
 	var face: Vector3 = plot.face
+	h.position = plot.pos
+	if not villa:
+		# المنزل في مؤخرة القطعة على جانب، والملحق بجواره، والفناء أمامهما
+		h.position = plot.pos + face * (-7.0 + w / 2.0 + 0.3) + plot.lat * (-7.5 + 0.4 + d / 2.0)
 	h.rotation.y = atan2(-face.z, face.x)        # المحور المحلي +X = اتجاه الباب
 	var sx := 1
 	var wall: StandardMaterial3D = _house_mats[_rng.randi() % _house_mats.size()]
@@ -230,6 +244,14 @@ func _build_house(plot: Dictionary, mine: bool, villa := false) -> void:
 				_hbox(h, Vector3(xo, hh + 1.9, zs * (d / 2.0 - 0.49)), Vector3(1.3, 1.1, 0.05), win, false)
 	for zo in [-d / 4.0 - 0.4, d / 4.0 + 0.4]:
 		_hbox(h, Vector3(sx * (w / 2.0 + 0.01), 1.9, zo), Vector3(0.05, 1.1, 1.3), win, false)
+	if not mine and not villa and _rng.randf() < 0.4:
+		# بعض السكان لهم ملحق مغلق (للشكل فقط)
+		var ax := Node3D.new()
+		_root.add_child(ax)
+		ax.rotation.y = h.rotation.y
+		ax.position = plot.pos + face * (-7.0 + 3.75 + 0.3) + plot.lat * (7.5 - 0.4 - 2.5)
+		_hbox(ax, Vector3(0, 1.5, 0), House.ANNEX_SIZE, _mat(Color("8f8676"), 0.9))
+		plot.npc_annex = ax
 	# الباب: مفصل على طرف الفتحة، يدور نحو الخارج عند اقتراب الساكن
 	var pivot := Node3D.new()
 	pivot.position = Vector3(sx * (w / 2.0 - t / 2.0), 0, -0.8)
@@ -240,8 +262,15 @@ func _build_house(plot: Dictionary, mine: bool, villa := false) -> void:
 	plot.house_mine = mine
 	plot.size = size
 	plot.stations = []
+	plot.annex_node = null
 	if mine:
-		_furnish(plot, h, size)
+		house.furnish(plot, h, size)
+		if house.annex != "" and not villa:
+			var a := Node3D.new()
+			_root.add_child(a)
+			a.rotation.y = h.rotation.y
+			a.position = plot.pos + face * (-7.0 + House.ANNEX_SIZE.x / 2.0 + 0.3) + plot.lat * (7.5 - 0.4 - House.ANNEX_SIZE.z / 2.0)
+			house.build_annex(plot, a)
 
 
 func _mat(c: Color, rough: float) -> StandardMaterial3D:
@@ -273,60 +302,6 @@ func _hbox(parent: Node3D, pos: Vector3, size: Vector3, mat: Material, collide :
 	return mi
 
 
-## أثاث منزلك: كل قطعة لها نقطة تفاعل (E)
-func _furnish(plot: Dictionary, h: Node3D, size: Vector3) -> void:
-	var sx := 1
-	var w := size.x
-	var hh := size.y
-	var d := size.z
-	var lamp := OmniLight3D.new()
-	lamp.light_color = Color(1.0, 0.85, 0.65)
-	lamp.light_energy = 1.8
-	lamp.omni_range = maxf(w, d)
-	lamp.shadow_enabled = false
-	lamp.position = Vector3(0, hh - 0.4, 0)
-	h.add_child(lamp)
-	_hbox(h, Vector3(0, hh - 0.05, 0), Vector3(0.6, 0.08, 0.6), _glow(Color(1.0, 0.9, 0.7)), false)
-	_hbox(h, Vector3(sx * 0.6, 0.15, 0), Vector3(3.6, 0.02, 2.6), _mat(Color("7a2630"), 1.0), false)   # سجادة
-	var metal := _mat(Color("2b2e33"), 0.35)
-	metal.metallic = 0.8
-	# طاولة الغسيل عند الجدار الخلفي + رزم المال عليها
-	var desk_x := -sx * (w / 2.0 - 1.0)
-	_hbox(h, Vector3(desk_x, 0.45, -d / 4.0), Vector3(1.2, 0.9, 2.4), _mat(Color("4b3a2a"), 0.6))
-	_hbox(h, Vector3(desk_x + sx * 0.1, 0.98, -d / 4.0 - 0.6), Vector3(0.5, 0.16, 0.4), _glow(Color(0.3, 1.0, 0.5), 0.6), false)  # آلة عدّ النقود
-	var money: Array = []
-	for k in 6:
-		var m := _hbox(h, Vector3(desk_x + (k % 2) * 0.3 - 0.15, 0.98 + (k / 2) * 0.11, -d / 4.0 + 0.3), Vector3(0.26, 0.1, 0.5), _mat(Color("4f8a4a"), 0.8), false)
-		money.append(m)
-	plot.money = money
-	plot.stations.append({"kind": "desk", "pos": h.transform * Vector3(desk_x + sx * 1.3, 0, -d / 4.0)})
-	# الرفوف على الجدار الجانبي + صناديق الغنائم
-	var rz := d / 2.0 - 0.55
-	_hbox(h, Vector3(-sx * 0.5, 1.0, rz), Vector3(3.2, 2.0, 0.6), metal)
-	var items: Array = []
-	for row in 3:
-		_hbox(h, Vector3(-sx * 0.5, 0.35 + row * 0.62, rz - 0.31), Vector3(3.2, 0.05, 0.05), metal, false)
-		for k in 5:
-			var b := _hbox(h, Vector3(-sx * 0.5 + (k - 2) * 0.6, 0.55 + row * 0.62, rz - 0.38), Vector3(0.45, 0.34, 0.3), _mat(Color("8a6f45"), 0.9), false)
-			items.append(b)
-	plot.rack_items = items
-	plot.stations.append({"kind": "racks", "pos": h.transform * Vector3(-sx * 0.5, 0, rz - 1.3)})
-	# الخزنة (تظهر بعد شرائها)
-	var safe_mesh := _hbox(h, Vector3(-sx * (w / 2.0 - 0.8), 0.55, rz - 0.2), Vector3(0.9, 1.1, 0.9), metal, false)
-	plot.safe_mesh = safe_mesh
-	plot.stations.append({"kind": "safe", "pos": h.transform * Vector3(-sx * (w / 2.0 - 0.8), 0, rz - 1.3)})
-	# لوحة نظام الأمان بجوار الباب (ضوء أخضر = محمي، أحمر = بلا أمان)
-	var led := _glow(Color.RED)
-	_hbox(h, Vector3(sx * (w / 2.0 - 0.3), 1.45, -1.7), Vector3(0.06, 0.55, 0.4), metal, false)
-	_hbox(h, Vector3(sx * (w / 2.0 - 0.34), 1.6, -1.7), Vector3(0.04, 0.08, 0.2), led, false)
-	plot.led = led
-	plot.stations.append({"kind": "panel", "pos": h.transform * Vector3(sx * (w / 2.0 - 1.1), 0, -1.7)})
-	# أريكة وطاولة صغيرة
-	_hbox(h, Vector3(sx * 0.9, 0.38, -d / 2.0 + 0.75), Vector3(2.4, 0.75, 0.9), _mat(Color("394a63"), 0.9))
-	_hbox(h, Vector3(sx * 0.9, 0.25, -d / 2.0 + 2.0), Vector3(1.2, 0.5, 0.6), _mat(Color("5a4330"), 0.6))
-	_update_interior(plot)
-
-
 func _glow(c: Color, e := 2.0) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = c
@@ -334,23 +309,6 @@ func _glow(c: Color, e := 2.0) -> StandardMaterial3D:
 	m.emission = c
 	m.emission_energy_multiplier = e
 	return m
-
-
-## يعكس حالة قاعدتك داخل المنزل: رزم المال، الغنائم على الرفوف، الخزنة، لون لوحة الأمان
-func _update_interior(plot: Dictionary) -> void:
-	if not plot.get("house_mine", false) or plot.house == null:
-		return
-	var pool: float = game.crime.launder_pool
-	var n_money := 0 if pool <= 0.0 else clampi(int(ceil(pool / 20000.0)), 1, 6)
-	for i in plot.money.size():
-		plot.money[i].visible = i < n_money
-	var n_items: int = game.gangs.stash.size()
-	for i in plot.rack_items.size():
-		plot.rack_items[i].visible = i < mini(n_items, 15)
-	plot.safe_mesh.visible = safe
-	var c := Color(0.2, 1.0, 0.35) if security else Color(1.0, 0.15, 0.1)
-	plot.led.albedo_color = c
-	plot.led.emission = c
 
 
 func _home_plot() -> Dictionary:
@@ -364,7 +322,13 @@ func _is_inside(plot: Dictionary, p: Vector3) -> bool:
 		return false
 	var size: Vector3 = plot.size
 	var l: Vector3 = (plot.house as Node3D).transform.affine_inverse() * p
-	return absf(l.x) < size.x / 2.0 - 0.1 and absf(l.z) < size.z / 2.0 - 0.1
+	if absf(l.x) < size.x / 2.0 - 0.1 and absf(l.z) < size.z / 2.0 - 0.1:
+		return true
+	var a = plot.get("annex_node")
+	if a != null and is_instance_valid(a):
+		var la: Vector3 = (a as Node3D).transform.affine_inverse() * p
+		return absf(la.x) < House.ANNEX_SIZE.x / 2.0 - 0.1 and absf(la.z) < House.ANNEX_SIZE.z / 2.0 - 0.1
+	return false
 
 
 ## الباب والحالة الداخلية (كل إطار فيزيائي)
@@ -397,7 +361,7 @@ func _tick_home(dt: float) -> void:
 		var near := game.player.car == null and Vector2(p.x - door_pos.x, p.z - door_pos.z).length() < 3.2
 		var target: float = PI / 2.0 * 0.95 if near else 0.0
 		door.rotation.y = lerp_angle(door.rotation.y, target, minf(1.0, dt * 6.0))
-		_update_interior(hp)
+		house.update_visuals()
 
 
 func _station_hint() -> String:
@@ -406,39 +370,17 @@ func _station_hint() -> String:
 		return ""
 	var p: Vector3 = game.player_pos()
 	var e := Input.is_action_just_pressed("interact")
+	var best := {}
+	var bd := 1.4
 	for st in hp.stations:
 		var sp: Vector3 = st.pos
-		if Vector2(p.x - sp.x, p.z - sp.z).length() > 1.4:
-			continue
-		match st.kind:
-			"desk":
-				if e:
-					game.crime.open_laundering()
-				return "طاولة الغسيل — اضغط E (قيد الغسيل: %s)" % Cfg.money(int(game.crime.launder_pool))
-			"racks":
-				if e:
-					open_racks()
-				return "الرفوف — اضغط E (%d/%d غنيمة)" % [game.gangs.stash.size(), Gangs.STASH_CAP]
-			"safe":
-				if not safe:
-					return "مكان الخزنة — اشترِها من لوحة الأمان عند الباب"
-				return "🗄 الخزنة تحمي الرفوف من المقتحمين (إلا من مفتاح رئيسي)"
-			"panel":
-				if e:
-					open_panel()
-				return "لوحة نظام الأمان — اضغط E (%s)" % ("محمي" if security else "بلا حماية")
-	return "منزلك — اقترب من طاولة الغسيل أو الرفوف أو لوحة الأمان"
-
-
-func open_racks() -> void:
-	var gg: Gangs = game.gangs
-	var cr: Crime = game.crime
-	var sellable := cr.bag.filter(func(i): return i.kind != "deposit_key")
-	var items: Array = [
-		{"text": "خزّن الغنائم على الرفوف (%d غنيمة)" % sellable.size(), "enabled": not sellable.is_empty() and gg.stash.size() < Gangs.STASH_CAP, "cb": func(): gg._stash_bag(); open_racks()},
-		{"text": "خذ الغنائم إلى الحقيبة (%d · %s)" % [gg.stash.size(), Cfg.money(gg.stash_value())], "enabled": not gg.stash.is_empty() and cr.bag.size() < Crime.BAG_SLOTS, "cb": func(): gg._take_stash(); open_racks()},
-	]
-	game.hud.open_menu("الرفوف", "%d/%d غنيمة · قيمتها %s%s" % [gg.stash.size(), Gangs.STASH_CAP, Cfg.money(gg.stash_value()), " · 🗄 محمية بخزنة" if safe else ""], items)
+		var dd := Vector2(p.x - sp.x, p.z - sp.z).length()
+		if dd < bd:
+			bd = dd
+			best = st
+	if not best.is_empty():
+		return house.station_hint(best.kind, e)
+	return "منزلك — الحاسوب، الإسعافات، مخطط البناء، طاولة الغسيل… اقترب من أي منها"
 
 
 func open_panel() -> void:
@@ -452,6 +394,10 @@ func _clear_house(plot: Dictionary) -> void:
 	if plot.house != null and is_instance_valid(plot.house):
 		plot.house.queue_free()
 	plot.house = null
+	for key in ["annex_node", "npc_annex"]:
+		if plot.get(key) != null and is_instance_valid(plot[key]):
+			plot[key].queue_free()
+		plot[key] = null
 
 
 func _initial_owners() -> void:
@@ -547,7 +493,7 @@ func decoders_needed() -> int:
 func security_text() -> String:
 	if not security:
 		return "🔓 بلا نظام أمان"
-	return "🔒 أمان + %d صمام (يحتاج المقتحم %d أجهزة فك شفرة)%s%s" % [fuses, decoders_needed(), " · 🔔 إنذار" if alarm else "", " · 🗄 خزنة" if safe else ""]
+	return "🔒 أمان + %d صمام (يحتاج المقتحم %d أجهزة فك شفرة)%s%s" % [fuses, decoders_needed(), " · 🔔 إنذار" if alarm else "", (" · 🗄 خزائن: %d" % house.count("safe")) if house.count("safe") > 0 else ""]
 
 
 func base_title() -> String:
@@ -569,12 +515,10 @@ func security_items() -> Array:
 	var items: Array = []
 	if not security:
 		items.append({"text": "نظام أمان (يحتاج المقتحم جهاز فك شفرة) — %s" % Cfg.money(SECURITY_COST), "enabled": game.bank >= SECURITY_COST, "cb": _buy.bind("security", SECURITY_COST)})
-	elif fuses < MAX_FUSES:
-		items.append({"text": "صمام إلكتروني %d/%d (+1 جهاز فك شفرة مطلوب) — %s" % [fuses + 1, MAX_FUSES, Cfg.money(FUSE_COST)], "enabled": game.bank >= FUSE_COST, "cb": _buy.bind("fuse", FUSE_COST)})
+	elif fuses < house.max_fuses():
+		items.append({"text": "صمام إلكتروني %d/%d (+1 جهاز فك شفرة مطلوب) — %s" % [fuses + 1, house.max_fuses(), Cfg.money(FUSE_COST)], "enabled": game.bank >= FUSE_COST, "cb": _buy.bind("fuse", FUSE_COST)})
 	if not alarm:
 		items.append({"text": "جهاز إنذار (ينبّهك فور بدء الاقتحام) — %s" % Cfg.money(ALARM_COST), "enabled": game.bank >= ALARM_COST, "cb": _buy.bind("alarm", ALARM_COST)})
-	if not safe:
-		items.append({"text": "خزنة للرفوف (لا يفتحها إلا مفتاح رئيسي) — %s" % Cfg.money(SAFE_COST), "enabled": game.bank >= SAFE_COST, "cb": _buy.bind("safe", SAFE_COST)})
 	return items
 
 
@@ -622,11 +566,22 @@ func open_motel() -> void:
 	var items: Array = [
 		{"text": "اترك نقودك عند Lenny (%s) — لا تُصادر عند القبض عليك" % Cfg.money(game.cash), "enabled": game.cash > 0 and game.wanted == 0, "cb": _motel_deposit},
 		{"text": "خذ نقودك (%s)" % Cfg.money(motel_cash), "enabled": motel_cash > 0, "cb": _motel_take},
+		{"text": "اغسل عند Lenny بنصف القيمة: %s ← %s في البنك (حتى $100,000)" % [Cfg.money(mini(game.cash, 100000)), Cfg.money(mini(game.cash, 100000) / 2)], "enabled": game.cash > 0 and game.wanted == 0, "cb": _motel_launder},
 	]
 	var sub := "محفوظ هنا: %s\nالموتيل يحفظ النقود فقط. لتخزين الغنائم وغسل الأموال تحتاج منزلاً على قطعة أرض:\nابحث عن الوثيقة في السوق السوداء، اشترِها، ثم استأجر قطعة من مستوطنة (L لخريطة المستوطنة)." % Cfg.money(motel_cash)
 	if home.x >= 0:
 		sub += "\n🏠 منزلك في %s" % settlements[home.x].name
 	game.hud.open_menu("موتيل Lenny", sub, items)
+
+
+func _motel_launder() -> void:
+	var amt := mini(game.cash, 100000)
+	game.cash -= amt
+	game.bank += amt / 2
+	game.hud.toast("غسلت %s عند Lenny → %s في البنك" % [Cfg.money(amt), Cfg.money(amt / 2)], Color("7dff9e"))
+	game.check_win()
+	game.save_game()
+	open_motel()
 
 
 func _motel_deposit() -> void:
@@ -728,6 +683,12 @@ func on_robbery(total: int) -> void:
 		n += 1
 	if total > 30000 and randf() < 0.6:
 		n += 1
+	if total > 5000 and randf() < 0.3:
+		game.crime.bag.append(house._crate_item())
+		game.hud.toast("📦 وجدت شحنة مغلقة — افتحها على طاولة الشحنات أو بعها للمشتري (لا تُشهر سلاحاً وهي معك!)", Color("ffd36b"))
+	if total < 8000 and randf() < 0.4:
+		house.reagents += 1
+		game.hud.toast("⚗ وجدت كاشفاً كيميائياً (لديك %d)" % house.reagents, Color("d9c7ff"))
 	if n > 0:
 		docs += n
 		game.hud.toast("📄 وجدت %d مستند%s بين الغنائم (لديك %d)" % [n, "ين" if n == 2 else "اً", docs], Color("d9c7ff"))
@@ -739,6 +700,9 @@ func interact(_dt: float) -> String:
 		return ""
 	if inside_home:
 		return _station_hint()
+	var ph := _pickup_hint()
+	if ph != "":
+		return ph
 	var p: Vector3 = game.player_pos()
 	for si in settlements.size():
 		var s: Dictionary = settlements[si]
@@ -926,6 +890,8 @@ func _collect(si: int) -> void:
 # ---------------------------------------------------------------- الدورات الزمنية
 func tick(dt: float) -> void:
 	_tick_home(dt)
+	house.tick(dt)
+	_tick_pickups(dt)
 	_tax_t -= dt
 	if _tax_t <= 0.0:
 		_tax_t = TAX_PERIOD
@@ -967,17 +933,10 @@ func resolve_raid(decoders: int, gang: String) -> void:
 	var cr: Crime = game.crime
 	var lost: float = cr.launder_pool * 0.5
 	cr.launder_pool -= lost
-	var taken := 0
-	var master_key := randf() < 0.25
-	if not safe or master_key:
-		taken = game.gangs.stash.size() / 2
-		for k in taken:
-			game.gangs.stash.pop_back()
+	var extra: String = house.raid_losses(randf() < 0.25)
 	var msg := "💥 اخترقت عصابة %s قاعدتك: أخذوا %s من طاولة الغسيل" % [gang, Cfg.money(int(lost))]
-	if taken > 0:
-		msg += " و%d غنيمة من الرفوف%s" % [taken, " (معهم مفتاح رئيسي فتح الخزنة)" if safe else ""]
-	elif safe:
-		msg += " — الخزنة حمت الرفوف"
+	if extra != "":
+		msg += " و" + extra
 	game.hud.toast(msg + "\nالمال في البنك آمن.", Color("ff6b6b"))
 
 
@@ -997,6 +956,8 @@ func wipe() -> void:
 	fuses = 0
 	alarm = false
 	safe = false
+	house.wipe()
+	_clear_pickups("cargo")
 	for s in settlements:
 		s.tax_box = 0
 	_initial_owners()
@@ -1011,7 +972,7 @@ func to_dict() -> Dictionary:
 			tenants.append(s.plots[k].tenant)
 		owned.append({"owner": s.owner, "name": s.owner_name, "tax": s.tax_box, "tenants": tenants})
 	return {"docs": docs, "researched": researched, "motel": motel_cash, "evict": eviction_rights, "plot_titles": plot_titles, "settle_titles": settle_titles, "home": [home.x, home.y],
-		"security": security, "fuses": fuses, "alarm": alarm, "safe": safe, "settlements": owned}
+		"security": security, "fuses": fuses, "alarm": alarm, "settlements": owned, "house": house.to_dict()}
 
 
 func from_dict(d: Dictionary) -> void:
@@ -1026,7 +987,11 @@ func from_dict(d: Dictionary) -> void:
 	security = d.get("security", security)
 	fuses = d.get("fuses", fuses)
 	alarm = d.get("alarm", false)
-	safe = d.get("safe", false)
+	house.from_dict(d.get("house", {}))
+	if d.get("safe", false) and not house.slots.has("safe"):
+		house.slots.append("safe")      # ترحيل: الخزنة القديمة صارت أثاثاً
+	if home.y >= PLOTS:
+		home = Vector2i(-1, -1)          # حفظ من تصميم أقدم للمستوطنة
 	var st: Array = d.get("settlements", [])
 	if game.net.is_online():
 		return                                 # ملكية الأراضي في اللعب الجماعي يحددها الخادم
@@ -1105,7 +1070,7 @@ func open_map(si := -1) -> void:
 		items.append({"text": txt + "  ← حدّد المسار", "enabled": true, "cb": _pick.bind(si, k)})
 	items.append({"text": "🏛 الفيلا (منزل البداية) — المالك: %s  ← حدّد المسار" % owner_text(s), "enabled": true, "cb": _pick.bind(si, 0)})
 	items.append({"text": "◀ المستوطنة التالية", "enabled": true, "cb": open_map.bind((si + 1) % settlements.size())})
-	var sub := "%s · مستوى %d · النمط %s · المالك: %s\nقطع فارغة: %d من 10 · تحتاج وثيقة قطعة مستوى %d · الرمادي = فارغة، الأزرق = منزلك، الأبيض = مسكونة" % [
+	var sub := "%s · مستوى %d · النمط %s · المالك: %s\nقطع فارغة: %d من 6 · تحتاج وثيقة قطعة مستوى %d · الرمادي = فارغة، الأزرق = منزلك، الأبيض = مسكونة" % [
 		s.name, s.level, s.layout, owner_text(s), free, s.level]
 	game.hud.open_menu("خريطة المستوطنة", sub, items)
 	var view := MapView.new()
@@ -1141,8 +1106,8 @@ class MapView extends Control:
 	func _plot_rect(pl: Dictionary, villa: bool) -> Rect2:
 		var k := (SZ - 20.0) / 48.0
 		var c := _to_map(pl.pos)
-		var half := (5.3 if villa else 3.6) * k
-		return Rect2(c - Vector2(half, half), Vector2(half, half) * 2.0)
+		var half := Vector2(6.5, 4.0) * k if villa else Vector2(6.8, 7.3) * k   # القطع 14×15 م
+		return Rect2(c - half, half * 2.0)
 
 	func _draw() -> void:
 		var s: Dictionary = land.settlements[si]
@@ -1152,7 +1117,7 @@ class MapView extends Control:
 		draw_rect(Rect2(c - Vector2(22.6, 22.6) * k, Vector2(45.2, 45.2) * k), Color("8c8172"), false, 3.0)
 		# البوابة (فتحة في الأسفل) والممر
 		draw_rect(Rect2(c + Vector2(-3.0, 21.0) * k, Vector2(6.0, 3.5) * k), Color("2b261f"))
-		draw_rect(Rect2(c + Vector2(-2.0, -14.0) * k, Vector2(4.0, 36.0) * k), Color("6f6a62"))
+		draw_rect(Rect2(c + Vector2(-2.0, -12.0) * k, Vector2(4.0, 34.0) * k), Color("6f6a62"))
 		var font := get_theme_default_font()
 		draw_string(font, c + Vector2(-14, 24.5 * k + 14), "GATE", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("ffd36b"))
 		for i in s.plots.size():
@@ -1184,3 +1149,80 @@ class MapView extends Control:
 				if _plot_rect(s.plots[i], i == 0).has_point(e.position):
 					land._pick(si, i)
 					return
+
+
+# ---------------------------------------------------------------- الالتقاط: شتلات الحدائق والشحنات الساقطة
+## شجيرات برية في الحدائق وعلى زوايا الأرصفة (كما في ROB RUN: تجدها في أنحاء المدينة)
+func _spawn_bushes() -> void:
+	var inner: Array = game.city.blocks.filter(func(b): return absf(b.center.x) < Cfg.HALF and absf(b.center.y) < Cfg.HALF and not b.get("settlement", false))
+	for b in inner:
+		if b.park:
+			for k in 2:
+				_add_pickup(Vector3(b.center.x + _rng.randf_range(-16, 16), 0.2, b.center.y + _rng.randf_range(-16, 16)), "bush", {})
+		elif _rng.randf() < 0.35:
+			var sx := 1.0 if _rng.randf() < 0.5 else -1.0
+			var sz := 1.0 if _rng.randf() < 0.5 else -1.0
+			_add_pickup(Vector3(b.center.x + sx * 22.0, 0.2, b.center.y + sz * 22.0), "bush", {})
+
+
+func _add_pickup(pos: Vector3, kind: String, item: Dictionary) -> void:
+	var n := Node3D.new()
+	_root.add_child(n)
+	n.position = pos
+	if kind == "bush":
+		_hbox(n, Vector3(0, 0.45, 0), Vector3(0.9, 0.9, 0.9), _mat(Color("3f8f3a"), 0.9), false)
+		_hbox(n, Vector3(0, 1.0, 0), Vector3(0.5, 0.4, 0.5), _glow(Color(0.4, 1.0, 0.4), 0.4), false)
+	else:
+		_hbox(n, Vector3(0, 0.3, 0), Vector3(0.6, 0.6, 0.6), _mat(Color("7c5a2c"), 0.9), false)
+	pickups.append({"pos": pos, "node": n, "kind": kind, "item": item, "t": 0.0})
+
+
+func _clear_pickups(kind: String) -> void:
+	for pk in pickups.duplicate():
+		if pk.kind == kind:
+			pk.node.queue_free()
+			pickups.erase(pk)
+
+
+func _tick_pickups(dt: float) -> void:
+	if not _bushes_spawned:
+		_bushes_spawned = true
+		_spawn_bushes()
+	for pk in pickups:
+		if pk.kind == "bush" and not pk.node.visible:
+			pk.t -= dt
+			if pk.t <= 0.0:
+				pk.node.visible = true            # نبتت شجيرة جديدة
+	# إشهار السلاح وأنت تحمل شحنة يُسقطها
+	if game.weapons.aiming and game.player.car == null:
+		var cr: Crime = game.crime
+		var dropped := 0
+		for it in cr.bag.duplicate():
+			if it.kind == "cargo":
+				cr.bag.erase(it)
+				_add_pickup(game.player_pos() + Vector3(randf_range(-1, 1), 0, randf_range(-1, 1)), "cargo", it)
+				dropped += 1
+		if dropped > 0:
+			game.hud.toast("📦 أشهرت سلاحك فسقطت %d شحنة من يدك! (التقطها بـ E)" % dropped, Color("ffb36b"))
+
+
+func _pickup_hint() -> String:
+	var p: Vector3 = game.player_pos()
+	for pk in pickups:
+		if not pk.node.visible or Vector2(p.x - pk.pos.x, p.z - pk.pos.z).length() > 1.8:
+			continue
+		if Input.is_action_just_pressed("interact"):
+			if pk.kind == "bush":
+				house.bushes += 1
+				pk.node.visible = false
+				pk.t = 300.0
+				game.hud.toast("🌱 قطفت شتلة (معك %d) — ازرعها في غرفة الزراعة" % house.bushes, Color("9dffb0"))
+			else:
+				if game.crime.bag.size() >= Crime.BAG_SLOTS:
+					return "الحقيبة ممتلئة"
+				game.crime.bag.append(pk.item)
+				pk.node.queue_free()
+				pickups.erase(pk)
+			return ""
+		return "اضغط E لقطف الشتلة" if pk.kind == "bush" else "اضغط E لالتقاط الشحنة"
+	return ""

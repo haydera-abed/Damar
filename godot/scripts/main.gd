@@ -1391,7 +1391,7 @@ func _land_test(out: String) -> void:
 	await _frames(5)
 	print("AUTOTEST rent: home=%s house=%s tax=%.2f base=%s" % [land.home, sp.house != null, land.tenant_tax(), land.base_title()])
 	# الدخول إلى المنزل مشياً عبر الباب
-	var door_w: Vector3 = sp.house.transform * Vector3(Land.HOUSE.x / 2.0 + 2.5, 0.3, 0)
+	var door_w: Vector3 = sp.house.transform * Vector3(sp.size.x / 2.0 + 2.5, 0.3, 0)
 	var in_yaw := atan2(-sp.face.x, -sp.face.z)
 	player.teleport(door_w, in_yaw)
 	cam.yaw = in_yaw
@@ -1409,6 +1409,7 @@ func _land_test(out: String) -> void:
 		await _frames(3)
 		seen.append("%s:%s" % [st.kind, _hint.substr(0, 14)])
 	print("AUTOTEST stations: %s" % [seen])
+	await _house_test(sp)
 	# بيت ساكن آخر: الباب مغلق
 	var npc_plot: Dictionary = {}
 	for st2 in land.settlements:
@@ -1417,7 +1418,7 @@ func _land_test(out: String) -> void:
 				npc_plot = st2.plots[k]
 	if not npc_plot.is_empty():
 		var ny := atan2(-npc_plot.face.x, -npc_plot.face.z)
-		player.teleport(npc_plot.house.transform * Vector3(Land.HOUSE.x / 2.0 + 2.5, 0.3, 0), ny)
+		player.teleport(npc_plot.house.transform * Vector3(npc_plot.size.x / 2.0 + 2.5, 0.3, 0), ny)
 		cam.yaw = ny
 		await _frames(10)
 		Input.action_press("move_forward")
@@ -1441,11 +1442,14 @@ func _land_test(out: String) -> void:
 		wanted = 0
 		await _frames(2)
 		print("AUTOTEST evict-hint: %s" % _hint)
+		player.max_health = 100000.0          # المدافعون مسلحون؛ نختبر الاقتحام لا القتال
+		player.health = 100000.0
 		Input.action_press("interact")
 		await _frames(int(8.4 * 60))
 		Input.action_release("interact")
 		await _frames(3)
-		print("AUTOTEST evict: who=%s now=\"%s\" rights=%d decoders=%d cash=%d" % [who, land.settlements[ev_si].plots[ev_k].tenant, land.eviction_rights, crime.tools.get("decoder", 0), cash])
+		print("AUTOTEST evict: who=%s now=\"%s\" rights=%d decoders=%d cash=%d downed=%s" % [who, land.settlements[ev_si].plots[ev_k].tenant, land.eviction_rights, crime.tools.get("decoder", 0), cash, player.downed])
+		player.max_health = 100.0
 		for m in gangs.members.duplicate():
 			gangs.remove_robber(m)
 		wanted = 0
@@ -1510,15 +1514,119 @@ func _land_test(out: String) -> void:
 	print("AUTOTEST federal: home=%s docs=%d titles=%s research=%d motel=%d security=%s owner=%s bank=%d season=%s" % [land.home, land.docs, land.plot_titles, land.researched.size(), land.motel_cash, land.security, land.owner_text(hst), bank, gangs.season_mode])
 
 
+## اختبار المنزل: مخطط البناء، الترقية، الأثاث، الغسيل، الشحنات، الزراعة، المختبر، المرآب
+func _house_test(sp: Dictionary) -> void:
+	var H: House = land.house
+	bank += 3000000
+	print("AUTOTEST house-start: tier=%s stations=%d fuses_max=%d dirty_cap=%d stash_cap=%d" % [House.TIER_NAMES[H.tier_eff()], sp.stations.size(), H.max_fuses(), H.dirty_cap(), H.stash_cap()])
+	H._upgrade()
+	for k in ["cabinet", "safe", "rack", "bench", "bench", "cabinet"]:
+		H._place(k)
+	H._build_annex("grow")
+	close_menu()
+	sp = land._home_plot()
+	var kinds := {}
+	for st in sp.stations:
+		kinds[st.kind] = kinds.get(st.kind, 0) + 1
+	print("AUTOTEST house-plan: tier=%s slots=%s annex=%s stations=%s stash_cap=%d cargo_cap=%d benches=%d" % [House.TIER_NAMES[H.tier_eff()], H.slots, H.annex, kinds, H.stash_cap(), H.cargo_cap(), H.count("bench")])
+	# المحطات الثابتة تعمل
+	var hints := []
+	for st in sp.stations:
+		if st.kind in ["laptop", "aid", "plan", "grow"]:
+			player.teleport(st.pos + Vector3(0, 0.3, 0), 0.0)
+			await _frames(3)
+			hints.append(_hint.substr(0, 16))
+	print("AUTOTEST house-hints: %s" % [hints])
+	player.health = 20.0
+	H.first_aid()
+	print("AUTOTEST aid: health=%.0f" % player.health)
+	# طاولة الغسيل: العدّاد والكابل والحد
+	crime.launder_pool = 10000.0
+	var r0 := crime.launder_rate()
+	H._counter()
+	var r1 := crime.launder_rate()
+	H.cable_broken = true
+	var r2 := crime.launder_rate()
+	H._repair()
+	close_menu()
+	print("AUTOTEST desk: rate %.0f -> counter %.0f -> broken %.0f -> repaired=%s cap=%d" % [r0, r1, r2, not H.cable_broken, H.dirty_cap()])
+	# الشحنات: من الحقيبة إلى الرف ثم الطاولة تفتحها
+	crime.bag.clear()
+	crime.bag.append(H._crate_item())
+	crime.bag.append(H._crate_item())
+	H._store_cargo()
+	var st0 := gangs.stash.size()
+	H.tick(1.0)
+	var jobs := H.bench_jobs.size()
+	H.tick(H.crate_time() + 1.0)
+	print("AUTOTEST cargo: racks=%d jobs=%d stash %d -> %d" % [H.cargo.size(), jobs, st0, gangs.stash.size()])
+	H._module("plasma")
+	print("AUTOTEST bench: crate_time=%.0f capacity=%d" % [H.crate_time(), H.bench_capacity()])
+	# إشهار السلاح يُسقط الشحنة
+	crime.bag.append(H._crate_item())
+	weapons.aiming = true
+	land._tick_pickups(0.1)
+	weapons.aiming = false
+	var dropped := land.pickups.filter(func(pk): return pk.kind == "cargo").size()
+	print("AUTOTEST drop: dropped=%d bag_cargo=%d" % [dropped, crime.count_loot("cargo")])
+	# الزراعة
+	var bush_n := land.pickups.filter(func(pk): return pk.kind == "bush").size()
+	H.bushes = 2
+	H._add_table()
+	H._plant(0)
+	H._plant(1)
+	H._buy_fan()
+	H.tick(House.GROW_TIME)
+	var ready := H.tables.count(0.0)
+	H._harvest(0)
+	close_menu()
+	print("AUTOTEST grow: park_bushes=%d tables=%d ready=%d weed_bags=%d" % [bush_n, H.tables.size(), ready, crime.count_loot("weed")])
+	# المختبر
+	H._demolish()
+	H._build_annex("lab")
+	H.reagents = 3
+	var c0 := H.cargo.size()
+	H._start_batch()
+	var smoke: bool = H._vis.smoke.emitting if H._vis.has("smoke") else false
+	H.update_visuals()
+	smoke = H._vis.smoke.emitting
+	H.tick(House.REACTOR_TIME + 1.0)
+	close_menu()
+	print("AUTOTEST lab: smoke=%s cargo %d -> %d (or bag)" % [smoke, c0, H.cargo.size()])
+	# المرآب
+	H._demolish()
+	H._build_annex("garage")
+	H.garage_car = "sedan_sports"
+	var n_cars := cars.size()
+	H._take_car()
+	print("AUTOTEST garage: cars %d -> %d stored=%s" % [n_cars, cars.size(), H.garage_car])
+	# الموتيل: غسيل بنصف القيمة
+	cash = 40000
+	var b1 := bank
+	land._motel_launder()
+	close_menu()
+	print("AUTOTEST motel-launder: cash=%d bank+%d" % [cash, bank - b1])
+	# المداهمة: الخزائن تحمي جزءاً
+	gangs.stash.clear()
+	for i in 10:
+		gangs.stash.append({"name": "تحفة", "value": 5000, "kind": "art"})
+	H.cargo = [6000, 6000]
+	print("AUTOTEST raid-house: %s · left stash=%d cargo=%d" % [H.raid_losses(false), gangs.stash.size(), H.cargo.size()])
+
+
 ## لقطات البيئة: أوقات وطقس مختلفة من زاوية ثابتة في الشارع
 ## لقطات المستوطنات والقطع والمنازل (كاميرا ثابتة موجّهة)
 func _landshots() -> void:
 	var out := "user://landshots"
+	var only := ""
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--out="):
 			out = a.substr(6)
+		if a.begins_with("--only="):
+			only = a.substr(7)
 	DirAccess.make_dir_recursive_absolute(out)
 	world.cycle_enabled = false
+	gangs.season_mode = false          # تغيير الوقت بين اللقطات يعدّ أياماً؛ لا نريد مداهمة فيدرالية هنا
 	_on_start()
 	# مستوطنة تملكها أنت فيها سكان، ومستوطنة عصابة فيها قطع للإيجار
 	var mine: Dictionary = land.settlements[0]
@@ -1535,8 +1643,17 @@ func _landshots() -> void:
 	for i in 9:
 		gangs.stash.append({"name": "تحفة", "value": 5000, "kind": "art"})
 	land.security = true
-	land.safe = true
-	land._update_interior(other.plots[2])
+	bank += 5000000
+	land.house._upgrade()
+	for k in ["cabinet", "safe", "rack", "bench", "rack", "bench"]:
+		land.house._place(k)
+	land.house.cargo = [6000, 6000, 6000, 6000, 6000]
+	land.house._build_annex("grow")
+	land.house.tables = [0.0, 200.0, -1.0, 0.0]
+	land.house.fan = true
+	land._build_house(other.plots[2], true, false)
+	land.house.update_visuals()
+	close_menu()
 	land._set_tenant(other, 3, "")
 	hud.visible = false
 	var spots := []
@@ -1549,10 +1666,14 @@ func _landshots() -> void:
 		spots.append(["%s_courtyard" % st.district, c + gd * 10.0 + Vector3(0, 2.0, 0), c - gd * 18.0])
 	var hp: Dictionary = other.plots[2]
 	var ht: Transform3D = hp.house.transform
-	spots.append(["interior_desk", ht * Vector3(2.8, 1.7, 2.6), ht * Vector3(-3.0, 0.9, -1.8)])
-	spots.append(["interior_racks", ht * Vector3(2.8, 1.7, -2.6), ht * Vector3(-0.8, 1.0, 3.0)])
-	spots.append(["door", ht * Vector3(9.0, 1.7, 2.5), ht * Vector3(3.5, 1.3, 0.0)])
+	spots.append(["interior_back", ht * Vector3(3.2, 1.75, 3.8), ht * Vector3(-3.6, 0.9, -2.5)])
+	spots.append(["interior_side", ht * Vector3(3.2, 1.75, -3.8), ht * Vector3(-2.0, 1.0, 3.5)])
+	var at: Transform3D = hp.annex_node.transform
+	spots.append(["annex_grow", at * Vector3(3.2, 1.9, 1.8), at * Vector3(-3.0, 0.8, -0.8)])
+	spots.append(["plot_yard", hp.pos + hp.face * 13.0 + Vector3(0, 3.5, 0) + hp.lat * 3.0, hp.pos + Vector3(0, 1.5, 0)])
 	for spot in spots:
+		if only != "" and not (spot[0] as String).contains(only):
+			continue
 		for lk in [["noon", 13.0, 0], ["night", 22.0, 0]]:
 			world.hour = lk[1]
 			world.set_weather(lk[2], true)
