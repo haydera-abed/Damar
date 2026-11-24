@@ -28,6 +28,7 @@ var minimap: Minimap
 var menus := {}
 var bust_text: Label
 var _toast_t := 0.0
+var _settings_btns := {}
 
 
 func _ready() -> void:
@@ -277,6 +278,18 @@ func _build_menus() -> void:
 
 	var p := _overlay("paused")
 	_centered(_label("إيقاف مؤقت", 48, Color.WHITE, p))
+	_centered(_label("الإعدادات", 20, Color(1, 1, 1, 0.7), p))
+	_settings_btns["quality"] = _button("", p, func(): game.cycle_quality())
+	_settings_btns["weather"] = _button("", p, func(): game.cycle_weather())
+	_settings_btns["time"] = _button("", p, func(): game.advance_time())
+	_settings_btns["cycle"] = _button("", p, func(): game.toggle_day_cycle())
+	for k in _settings_btns:
+		var b: Button = _settings_btns[k]
+		b.add_theme_font_size_override("font_size", 18)
+		var st := _style(Color(0.15, 0.17, 0.24), 10, Color(1, 1, 1, 0.15))
+		b.add_theme_stylebox_override("normal", st)
+		b.custom_minimum_size = Vector2(380, 0)
+	_centered(_label("اختصارات: F2 الجودة · R الطقس · T الوقت", 13, Color(1, 1, 1, 0.5), p))
 	_button("متابعة", p, func(): continue_pressed.emit())
 
 	var w := _overlay("win")
@@ -285,7 +298,18 @@ func _build_menus() -> void:
 	_button("متابعة اللعب", w, func(): continue_pressed.emit())
 
 
+func refresh_settings() -> void:
+	if _settings_btns.is_empty() or game.world == null:
+		return
+	_settings_btns["quality"].text = "جودة الرسوم: " + WorldEnv.QUALITY_NAMES[game.quality]
+	_settings_btns["weather"].text = "الطقس: " + WorldEnv.WEATHER_NAMES[game.world.weather]
+	_settings_btns["time"].text = "الوقت: %s  (+3 ساعات)" % game.world.clock_text()
+	_settings_btns["cycle"].text = "دورة الليل والنهار: " + ("تعمل" if game.world.cycle_enabled else "متوقفة")
+
+
 func show_state(s: String) -> void:
+	if s == "paused":
+		refresh_settings()
 	for k in ["menu", "busted", "paused", "win"]:
 		menus[k].visible = (k == s)
 	menus["hud"].visible = s != "menu"

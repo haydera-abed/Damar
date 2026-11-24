@@ -14,7 +14,10 @@ const MODELS := {
 	"hatchback_sports": preload("res://assets/models/hatchback_sports.glb"),
 	"delivery_van": preload("res://assets/models/delivery_van.glb"),
 	"police_car": preload("res://assets/models/police_car.glb"),
+	"hero": preload("res://assets/models/hero/CarConcept.glb"),
 }
+const PAINT_SHADER := preload("res://shaders/car_paint.gdshader")
+static var _paint_cache := {}
 const LENGTH := 4.4
 
 var game: Node          # main.gd
@@ -49,6 +52,7 @@ var _bar_b: StandardMaterial3D
 var _siren_light: OmniLight3D
 var _phase := randf()
 var height := 1.5
+var is_hero := false
 
 
 func setup(model: String, is_police: bool) -> void:
@@ -63,6 +67,14 @@ func setup(model: String, is_police: bool) -> void:
 
 	var root: Node3D = MODELS[model].instantiate()
 	add_child(root)
+	is_hero = model == "hero"
+	# السيارة يجب أن تتجه نحو +Z: نقلبها إن كانت العجلات الأمامية خلفها
+	for n in root.find_children("*", "Node3D", true, false):
+		if String(n.name).to_lower().begins_with("wheelfront") or String(n.name).to_lower().begins_with("wheel-front"):
+			if _xf_to(n, root).origin.z < 0.0:
+				root.rotation.y = PI
+			break
+	_apply_materials(root, model)
 	# حساب حجم النموذج لتحجيمه إلى 4.4 م طولاً
 	var box := AABB()
 	var first := true
@@ -71,6 +83,8 @@ func setup(model: String, is_police: bool) -> void:
 		var b: AABB = xf * (mi as MeshInstance3D).mesh.get_aabb()
 		box = b if first else box.merge(b)
 		first = false
+	if root.rotation.y != 0.0:
+		box = Transform3D(Basis(Vector3.UP, root.rotation.y), Vector3.ZERO) * box
 	var s := LENGTH / box.size.z
 	root.scale = Vector3.ONE * s
 	root.position = Vector3(-box.get_center().x * s, -box.position.y * s, -box.get_center().z * s)
@@ -81,9 +95,12 @@ func setup(model: String, is_police: bool) -> void:
 		(mi as MeshInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 
 	# العجلات: ننقل نموذج كل عجلة إلى VehicleWheel3D
-	for n in root.find_children("wheel*", "Node3D", true, false):
+	for n in root.find_children("*", "Node3D", true, false):
 		var wn := n as Node3D
-		if wn.get_parent().name.begins_with("wheel"):
+		var nm := String(wn.name).to_lower()
+		if not nm.begins_with("wheel") or String(wn.get_parent().name).to_lower().begins_with("wheel"):
+			continue
+		if not (nm.contains("front") or nm.contains("back") or nm.contains("rear")):
 			continue
 		var wxf := _xf_to(wn, self)
 		var w_box: AABB = (wn as MeshInstance3D).mesh.get_aabb() if wn is MeshInstance3D else AABB(Vector3(-0.3, -0.3, -0.3), Vector3(0.6, 0.6, 0.6))
@@ -123,14 +140,16 @@ func setup(model: String, is_police: bool) -> void:
 	var head := StandardMaterial3D.new()
 	head.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	head.albedo_color = Color(4, 4, 3.6)
-	_tail_mat = StandardMaterial3D.new()
-	_tail_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_tail_mat.albedo_color = Color(1.2, 0.05, 0.05)
+	if _tail_mat == null:
+		_tail_mat = StandardMaterial3D.new()
+		_tail_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_tail_mat.albedo_color = Color(1.2, 0.05, 0.05)
 	var lx := width * 0.3
 	var ly := height * 0.36
-	for sx in [-1, 1]:
-		_light_box(Vector3(sx * lx, ly, LENGTH / 2.0), head)
-		_light_box(Vector3(sx * lx, ly + 0.05, -LENGTH / 2.0), _tail_mat)
+	if not is_hero:
+		for sx in [-1, 1]:
+			_light_box(Vector3(sx * lx, ly, LENGTH / 2.0), head)
+			_light_box(Vector3(sx * lx, ly + 0.05, -LENGTH / 2.0), _tail_mat)
 	if police:
 		_bar_r = StandardMaterial3D.new()
 		_bar_r.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -145,6 +164,73 @@ func setup(model: String, is_police: bool) -> void:
 		engine_power = 6500.0
 		max_speed = 30.0
 	body_entered.connect(_on_body_entered)
+
+
+## مواد واقعية: طلاء بورنيش لنماذج Kenney، ومواد خاصة لسيارة البطل (Khronos Car Concept)
+func _apply_materials(root: Node, model: String) -> void:
+	for n in root.find_children("*", "MeshInstance3D", true, false):
+		var mi := n as MeshInstance3D
+		for si in mi.mesh.get_surface_count():
+			var src := mi.mesh.surface_get_material(si) as BaseMaterial3D
+			if src == null:
+				continue
+			var nm := src.resource_name.to_lower()
+			if model == "hero":
+				var m: BaseMaterial3D = null
+				if nm.begins_with("paint"):
+					var p := StandardMaterial3D.new()
+					p.albedo_color = Color(0.32, 0.015, 0.02) if nm.contains("1") else Color(0.06, 0.06, 0.065)
+					p.metallic = 0.6
+					p.roughness = 0.3
+					p.clearcoat_enabled = true
+					p.clearcoat = 1.0
+					p.clearcoat_roughness = 0.03
+					if src.normal_texture:
+						p.normal_enabled = true
+						p.normal_texture = src.normal_texture
+						p.normal_scale = 0.25
+						p.uv1_scale = src.uv1_scale
+					m = p
+				elif nm.contains("glass"):
+					var g := StandardMaterial3D.new()
+					g.albedo_color = Color(0.02, 0.025, 0.03, 0.55)
+					g.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+					g.roughness = 0.02
+					g.metallic_specular = 1.0
+					m = g
+				elif nm.contains("mirror"):
+					var mm := StandardMaterial3D.new()
+					mm.albedo_color = Color(0.9, 0.9, 0.9)
+					mm.metallic = 1.0
+					mm.roughness = 0.0
+					m = mm
+				elif nm.contains("brakelight"):
+					var b := StandardMaterial3D.new()
+					b.albedo_color = Color(0.5, 0.02, 0.02)
+					b.roughness = 0.15
+					b.emission_enabled = true
+					b.emission = Color(1, 0.05, 0.03)
+					b.emission_energy_multiplier = 1.0
+					_tail_mat = b
+					m = b
+				elif nm.contains("headlight"):
+					var h := StandardMaterial3D.new()
+					h.albedo_color = Color(0.9, 0.9, 0.9)
+					h.roughness = 0.05
+					h.emission_enabled = true
+					h.emission = Color(1, 0.97, 0.9)
+					h.emission_energy_multiplier = 4.0
+					m = h
+				if m:
+					mi.set_surface_override_material(si, m)
+			elif src.albedo_texture:
+				var key := src.albedo_texture.resource_path + str(src.albedo_texture.get_rid())
+				if not _paint_cache.has(key):
+					var sm := ShaderMaterial.new()
+					sm.shader = PAINT_SHADER
+					sm.set_shader_parameter("albedo_tex", src.albedo_texture)
+					_paint_cache[key] = sm
+				mi.set_surface_override_material(si, _paint_cache[key])
 
 
 func _light_box(p: Vector3, m: Material, size := Vector3(0.4, 0.13, 0.05)) -> void:
@@ -222,7 +308,10 @@ func _physics_process(dt: float) -> void:
 
 	# المؤثرات
 	var bright := braking or (handbrake and ai != AI.PARKED)
-	_tail_mat.albedo_color = Color(6, 0.25, 0.25) if bright else Color(1.2, 0.05, 0.05)
+	if is_hero:
+		_tail_mat.emission_energy_multiplier = 8.0 if bright else 1.5
+	else:
+		_tail_mat.albedo_color = Color(6, 0.25, 0.25) if bright else Color(1.2, 0.05, 0.05)
 	if police:
 		var on := chase
 		var red := fmod(game.time * 2.2 + _phase, 1.0) < 0.5

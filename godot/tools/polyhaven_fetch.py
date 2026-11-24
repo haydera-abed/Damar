@@ -36,7 +36,7 @@ TEXTURES = [
 # المجسمات (glTF)
 MODELS = [
     "street_lamp_01", "street_lamp_02", "fire_hydrant", "metal_trash_can", "modular_street_seating",
-    "concrete_road_barrier_02", "trashbag", "planter_box_01", "shrub_03", "shrub_04",
+    "concrete_road_barrier_02", "trashbag", "planter_box_01", "shrub_03", "shrub_04",  # jacaranda_tree: نُزّلت ثم خُفّفت بـ tools/tree_lod.mjs
     "utility_box_01", "utility_box_02", "water_manhole_cover", "exterior_aircon_unit", "modular_fire_escape",
     "rollershutter_door", "rollershutter_window_01", "security_camera_01", "security_light",
     "modular_airduct_circular_01", "covered_car", "modular_metal_gutter",

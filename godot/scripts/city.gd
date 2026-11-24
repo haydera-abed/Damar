@@ -24,6 +24,8 @@ var safe_sx := -1
 var safe_ring: MeshInstance3D
 var blocks: Array[Dictionary] = []   # {center: Vector2, park: bool} للخريطة المصغّرة
 var detail_range := 200.0            # مدى رؤية الواجهات التفصيلية (حسب الجودة)
+var buildings: Array[Dictionary] = []  # {center, half, floors, front}
+var props: Props
 
 var rng := RandomNumberGenerator.new()
 var font: Font = preload("res://assets/fonts/Cairo.ttf")
@@ -37,10 +39,15 @@ func build() -> void:
 	rng.seed = 20261124
 	kit = FacadeKit.new()
 	kit.detail_range = detail_range
+	props = Props.new(self)
 	_build_ground()
 	_build_blocks()
 	_build_markings()
 	_build_lamps()
+	props.furnish_blocks()
+	props.trees_in_parks()
+	props.traffic_signals()
+	props.billboards(self)
 
 
 func set_detail_range(r: float) -> void:
@@ -141,6 +148,9 @@ func _occluder(center: Vector3, size: Vector3) -> void:
 func _add_kit_building(lot_pos: Vector3, floors: int, front: Vector3, ground := {}) -> Node3D:
 	var b := kit.build(self, Vector3(lot_pos.x, 0.15, lot_pos.z), MODULES, floors, rng, front, ground)
 	var w := MODULES * FacadeKit.MOD
+	var half := w / 2.0
+	buildings.append({"center": Vector3(lot_pos.x, 0.15, lot_pos.z), "half": half, "floors": floors, "front": front})
+	props.dress_building(Vector3(lot_pos.x, 0.15, lot_pos.z), half, floors, front)
 	var h := floors * FacadeKit.MOD
 	_static_box(Vector3(lot_pos.x, h / 2.0 + 0.15, lot_pos.z), Vector3(w + 0.4, h, w + 0.4))
 	_occluder(Vector3(lot_pos.x, h / 2.0 + 0.15, lot_pos.z), Vector3(w - 0.6, h - 0.5, w - 0.6))
@@ -164,19 +174,29 @@ func _build_blocks() -> void:
 	grass.roughness = 1.0
 
 	var lots: Array[Dictionary] = []
-	for bi in range(-1, Cfg.N + 1):
-		for bj in range(-1, Cfg.N + 1):
+	for bi in range(-2, Cfg.N + 2):
+		for bj in range(-2, Cfg.N + 2):
 			var cx := (bi + 0.5) * Cfg.CELL - Cfg.HALF
 			var cz := (bj + 0.5) * Cfg.CELL - Cfg.HALF
 			var inner := bi >= 0 and bi < Cfg.N and bj >= 0 and bj < Cfg.N
+			var ring1 := not inner and bi >= -1 and bi <= Cfg.N and bj >= -1 and bj <= Cfg.N
 			var park := inner and not (bi == 0 and bj == 0) and rng.randf() < 0.08
-			blocks.append({"center": Vector2(cx, cz), "park": park})
-			if not inner:
+			if not inner and not ring1:
+				# الحلقة الثانية: أفق أبراج بعيدة خفيفة (خارج حدود اللعب)
 				for sx in [-1, 1]:
 					for sz in [-1, 1]:
-						var dc := Vector2(cx, cz).length() / Cfg.HALF
-						_add_far_building(Vector3(cx + sx * 12, 0, cz + sz * 12), rng.randf_range(17, 21), rng.randf_range(17, 21), rng.randf_range(18, 34) + maxf(0.0, 1.6 - dc) * rng.randf_range(10, 50))
-				_add_box(Vector3(cx, 0.075, cz), Vector3(Cfg.BLOCK, 0.15, Cfg.BLOCK), curb, true, false)
+						_add_far_building(Vector3(cx + sx * 12, 0, cz + sz * 12), rng.randf_range(17, 21), rng.randf_range(17, 21), rng.randf_range(25, 45) + rng.randf_range(0, 50) * rng.randf())
+				continue
+			blocks.append({"center": Vector2(cx, cz), "park": park})
+			if ring1:
+				# الحلقة الأولى: مبانٍ حقيقية مطلة على حدود المدينة
+				_add_box(Vector3(cx, 0.075, cz), Vector3(Cfg.BLOCK - 0.6, 0.15, Cfg.BLOCK - 0.6), paving, true, false)
+				for sx in [-1, 1]:
+					for sz in [-1, 1]:
+						var lp := Vector3(cx + sx * 12, 0, cz + sz * 12)
+						var to_city := (-lp).normalized()
+						var front := Vector3(signf(to_city.x), 0, 0) if absf(to_city.x) > absf(to_city.z) else Vector3(0, 0, signf(to_city.z))
+						_add_kit_building(lp, rng.randi_range(4, 9), front)
 				continue
 			# رصيف مبلّط + حافة خرسانية بارزة
 			_add_box(Vector3(cx, 0.075, cz), Vector3(Cfg.BLOCK - 0.6, 0.15, Cfg.BLOCK - 0.6), paving, true, false)
@@ -185,8 +205,6 @@ func _build_blocks() -> void:
 				_add_box(Vector3(cx, 0.09, cz + s * (Cfg.BLOCK / 2.0 - 0.15)), Vector3(Cfg.BLOCK - 0.6, 0.18, 0.3), curb, false, false)
 			if park:
 				_add_box(Vector3(cx, 0.19, cz), Vector3(Cfg.BLOCK - 6, 0.08, Cfg.BLOCK - 6), grass, false, false)
-				for t in 14:
-					_add_tree(Vector3(cx + rng.randf_range(-19, 19), 0.23, cz + rng.randf_range(-19, 19)), rng.randf_range(0.8, 1.3))
 				continue
 			for sx in [-1, 1]:
 				for sz in [-1, 1]:
@@ -419,32 +437,24 @@ func _multimesh(size: Vector3, xforms: Array[Transform3D], mat: Material, shadow
 
 # ---------------------------------------------------------------- الإنارة
 func _build_lamps() -> void:
-	var poles: Array[Transform3D] = []
-	var heads: Array[Transform3D] = []
+	# عمود إنارة حقيقي في منتصف كل جانب من الرصيف (بعيداً عن إشارات التقاطعات)
 	for b in blocks:
-		for sx in [-1, 1]:
-			for sz in [-1, 1]:
-				var x: float = b.center.x + sx * 23.6
-				var z: float = b.center.y + sz * 23.6
-				poles.append(Transform3D(Basis.IDENTITY, Vector3(x, 3.5, z)))
-				heads.append(Transform3D(Basis.IDENTITY, Vector3(x + sx * 0.9, 6.95, z + sz * 0.9)))
-				var l := OmniLight3D.new()
-				l.light_color = Color(1.0, 0.78, 0.52)
-				l.light_energy = 4.5
-				l.omni_range = 24.0
-				l.omni_attenuation = 1.0
-				l.light_volumetric_fog_energy = 1.5
-				l.light_size = 0.25
-				l.distance_fade_enabled = true
-				l.distance_fade_begin = 110.0
-				l.distance_fade_length = 30.0
-				l.position = Vector3(x + sx * 1.2, 6.6, z + sz * 1.2)
-				l.add_to_group("street_lights")
-				add_child(l)
-				_static_box(Vector3(x, 3.5, z), Vector3(0.3, 7, 0.3))
-	var pole_m := StandardMaterial3D.new()
-	pole_m.albedo_color = Color("2c2f35")
-	pole_m.metallic = 0.7
-	pole_m.roughness = 0.5
-	_multimesh(Vector3(0.2, 7.0, 0.2), poles, pole_m, true)
-	_multimesh(Vector3(0.7, 0.18, 0.4), heads, _unshaded(Color(3.2, 2.4, 1.4)))
+		for side in 4:
+			var n := [Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 0, 1), Vector3(0, 0, -1)][side] as Vector3
+			var t := Vector3(-n.z, 0, n.x)
+			var p := Vector3(b.center.x, 0.15, b.center.y) + n * 23.9 + t * (12.0 if side % 2 == 0 else -12.0)
+			props.lamp(p, atan2(n.x, n.z))
+			var l := OmniLight3D.new()
+			l.light_color = Color(1.0, 0.8, 0.55)
+			l.light_energy = 7.0
+			l.omni_range = 27.0
+			l.omni_attenuation = 1.0
+			l.light_volumetric_fog_energy = 1.5
+			l.light_size = 0.25
+			l.distance_fade_enabled = true
+			l.distance_fade_begin = 110.0
+			l.distance_fade_length = 30.0
+			l.position = p + Vector3(0, 4.9, 0)
+			l.add_to_group("street_lights")
+			add_child(l)
+			_static_box(p + Vector3(0, 2.7, 0), Vector3(0.3, 5.4, 0.3))

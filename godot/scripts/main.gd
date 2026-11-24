@@ -32,6 +32,8 @@ var world: WorldEnv
 var quality := 2
 var _hint := ""
 var _lamps_on := true
+var _head_pool: Array[SpotLight3D] = []
+var _head_t := 0.0
 var _space: PhysicsDirectSpaceState3D
 
 
@@ -60,13 +62,24 @@ func _ready() -> void:
 
 	sfx = Sfx.new()
 	add_child(sfx)
+	for i in 6:
+		var hl := SpotLight3D.new()
+		hl.light_color = Color(1.0, 0.95, 0.85)
+		hl.light_energy = 6.0
+		hl.spot_range = 42.0
+		hl.spot_angle = 30.0
+		hl.spot_angle_attenuation = 1.5
+		hl.light_volumetric_fog_energy = 1.2
+		hl.visible = false
+		add_child(hl)
+		_head_pool.append(hl)
 	_build_rain()
 
 	for i in 16:
 		_spawn_civilian(Car.AI.TRAFFIC)
 	for i in 26:
 		_spawn_civilian(Car.AI.PARKED)
-	var starter := _make_car("sedan_sports", false, Car.AI.PARKED, Transform3D(Basis.IDENTITY, city.safe_pos + Vector3(city.safe_sx * 8.0, 0.6, 4.0)))
+	var starter := _make_car("hero", false, Car.AI.PARKED, Transform3D(Basis.IDENTITY, city.safe_pos + Vector3(city.safe_sx * 8.0, 0.6, 4.0)))
 	starter.engine_power = 6500.0
 	starter.max_speed = 38.0
 	for i in 2:
@@ -330,6 +343,51 @@ func _load() -> void:
 	won_shown = bank >= Cfg.GOAL
 
 
+## مصابيح أمامية حقيقية ليلاً لأقرب السيارات إلى الكاميرا (مجموعة ثابتة من الأضواء لأداء ثابت)
+# ---------------------------------------------------------------- إعدادات (من المفاتيح أو قائمة الإيقاف)
+func cycle_weather() -> void:
+	world.set_weather((world.weather + 1) % 4)
+	hud.refresh_settings()
+
+
+func advance_time() -> void:
+	world.hour = fmod(world.hour + 3.0, 24.0)
+	hud.toast("الوقت: " + world.clock_text(), Color("ffd36b"))
+	hud.refresh_settings()
+
+
+func cycle_quality() -> void:
+	quality = (quality + 1) % 4
+	_apply_quality()
+	_save_quality()
+	hud.toast("الجودة: " + WorldEnv.QUALITY_NAMES[quality], Color("9fd0ff"))
+	hud.refresh_settings()
+
+
+func toggle_day_cycle() -> void:
+	world.cycle_enabled = not world.cycle_enabled
+	hud.refresh_settings()
+
+
+func _update_headlights() -> void:
+	var on := world.night > 0.3 or world.cloud > 0.95
+	var cand: Array = []
+	if on:
+		for c in cars:
+			if c == player.car or c.ai == Car.AI.PARKED:
+				continue
+			var d := c.global_position.distance_squared_to(cam.global_position)
+			if d < 140.0 * 140.0:
+				cand.append([d, c])
+		cand.sort_custom(func(a, b): return a[0] < b[0])
+	for i in _head_pool.size():
+		var l := _head_pool[i]
+		l.visible = i < cand.size()
+		if l.visible:
+			var c: Car = cand[i][1]
+			l.global_transform = c.global_transform * Transform3D(Basis(Vector3.UP, PI) * Basis(Vector3.RIGHT, -0.07), Vector3(0, 0.8, 2.4))
+
+
 func _update_lamps() -> void:
 	var on := world.night > 0.35 or (world.cloud > 0.9 and world.night > 0.15)
 	if on != _lamps_on:
@@ -588,15 +646,11 @@ func _physics_process(dt: float) -> void:
 
 func _process(dt: float) -> void:
 	if Input.is_action_just_pressed("toggle_rain"):
-		world.set_weather((world.weather + 1) % 4)
+		cycle_weather()
 	if Input.is_action_just_pressed("cycle_time"):
-		world.hour = fmod(world.hour + 3.0, 24.0)
-		hud.toast("الوقت: " + world.clock_text(), Color("ffd36b"))
+		advance_time()
 	if Input.is_action_just_pressed("cycle_quality"):
-		quality = (quality + 1) % 4
-		_apply_quality()
-		_save_quality()
-		hud.toast("الجودة: " + WorldEnv.QUALITY_NAMES[quality], Color("9fd0ff"))
+		cycle_quality()
 	if Input.is_action_just_pressed("toggle_mute"):
 		sfx.muted = not sfx.muted
 		hud.toast("الصوت: مكتوم" if sfx.muted else "الصوت: تشغيل")
@@ -619,6 +673,8 @@ func _process(dt: float) -> void:
 		s.glass_mat.albedo_color = s.def.color * (0.6 if open else 0.08)
 		s.glow.visible = open
 	city.safe_ring.scale = Vector3(k, 0.05, k)
+	city.props.update_signals(time)
+	_update_headlights()
 	_update_lamps()
 
 	var siren := 0.0
@@ -731,7 +787,12 @@ func _envshots() -> void:
 		["avenue", Vector3(-110, 1.6, 3.5), Vector3(-40, 6.0, -2.0)],
 		["corner", Vector3(-60, 2.2, -60), Vector3(-80, 8.0, -85)],
 		["aerial", Vector3(-150, 70, -150), Vector3(0, 0, 0)],
+		["sidewalk", Vector3(-76.3, 1.7, -186), Vector3(-75.0, 2.2, -150)],
 	]
+	for c in cars:
+		if c.is_hero:
+			var hp := c.global_position
+			spots.append(["hero", hp + Vector3(-5.5 * city.safe_sx, 1.4, 6.0), hp + Vector3(0, 0.5, 0)])
 	var looks := [["noon_clear", 12.5, 0], ["sunset", 17.9, 1], ["night_rain", 22.0, 2], ["night_storm", 1.0, 3]]
 	for spot in spots:
 		for lk in looks:
@@ -746,6 +807,8 @@ func _envshots() -> void:
 			cam.look_at(spot[2])
 			await _frames(20)
 			_update_lamps()
+			city.props.update_signals(5.0)
+			_update_headlights()
 			await _frames(25)
 			await _shot("%s/%s.png" % [out, name])
 			if spot[0] == "street" and lk[0] == "noon_clear":

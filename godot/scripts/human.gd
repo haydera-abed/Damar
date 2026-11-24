@@ -52,6 +52,16 @@ func setup(role: String, with_bag := false) -> void:
 			if cols.has(src.resource_name):
 				m.albedo_color = cols[src.resource_name]
 			m.roughness = 0.85
+			if src.resource_name.contains("Skin"):
+				# جلد: تشتت تحت السطح خفيف يمنع مظهر البلاستيك
+				m.subsurf_scatter_enabled = true
+				m.subsurf_scatter_strength = 0.35
+				m.roughness = 0.55
+			elif src.resource_name.contains("Shirt") or src.resource_name.contains("Pants"):
+				m.roughness = 0.95
+				m.rim_enabled = true
+				m.rim = 0.25
+				m.rim_tint = 0.6
 			mats[s] = m
 		_mat_cache[key] = mats
 	for s in _mat_cache[key]:
