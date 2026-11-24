@@ -2,6 +2,7 @@ extends Node3D
 ## منسّق اللعبة: البيئة، المدينة، المركبات، الشرطة، النجوم، السرقة، الاعتقال، الواجهة، الحفظ.
 
 const SAVE_PATH := "user://damar_save.cfg"
+const DETAIL_RANGE := [90.0, 140.0, 200.0, 300.0]   # مدى الواجهات التفصيلية لكل مستوى جودة
 
 var state := "menu"        # menu | play | paused | busted | win
 var time := 0.0
@@ -27,15 +28,19 @@ var rain_on := true
 
 var _spawn_t := 0.0
 var _rain: GPUParticles3D
-var _env: Environment
+var world: WorldEnv
+var quality := 2
 var _hint := ""
+var _lamps_on := true
 var _space: PhysicsDirectSpaceState3D
 
 
 func _ready() -> void:
 	_load()
 	_build_environment()
+	quality = _load_quality()
 	city = City.new()
+	city.detail_range = DETAIL_RANGE[quality]
 	add_child(city)
 	city.build()
 
@@ -44,6 +49,7 @@ func _ready() -> void:
 	cam.far = 900.0
 	add_child(cam)
 	cam.current = true
+	_apply_quality()
 
 	player = Player.new()
 	player.game = self
@@ -75,6 +81,8 @@ func _ready() -> void:
 
 	if "--autotest" in OS.get_cmdline_user_args():
 		_autotest()
+	elif "--envshots" in OS.get_cmdline_user_args():
+		_envshots()
 
 
 # ---------------------------------------------------------------- واجهة للسكربتات الأخرى
@@ -146,51 +154,9 @@ func spawn_officer(car: Car) -> void:
 
 # ---------------------------------------------------------------- البيئة
 func _build_environment() -> void:
-	_env = Environment.new()
-	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.01, 0.015, 0.045)
-	sky_mat.sky_horizon_color = Color(0.13, 0.09, 0.13)
-	sky_mat.ground_horizon_color = Color(0.06, 0.05, 0.07)
-	sky_mat.ground_bottom_color = Color(0.01, 0.01, 0.015)
-	sky_mat.sun_angle_max = 2.0
-	sky_mat.sun_curve = 0.05
-	sky_mat.energy_multiplier = 1.0
-	var sky := Sky.new()
-	sky.sky_material = sky_mat
-	_env.background_mode = Environment.BG_SKY
-	_env.sky = sky
-	_env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	_env.ambient_light_energy = 1.4
-	_env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
-	_env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	_env.tonemap_exposure = 1.1
-	_env.glow_enabled = true
-	_env.glow_intensity = 0.9
-	_env.glow_bloom = 0.08
-	_env.glow_hdr_threshold = 1.0
-	_env.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
-	_env.ssr_enabled = true
-	_env.ssr_max_steps = 48
-	_env.ssr_fade_in = 0.2
-	_env.ssr_fade_out = 2.0
-	_env.ssao_enabled = true
-	_env.ssao_intensity = 1.5
-	_env.fog_enabled = true
-	_env.fog_light_color = Color(0.07, 0.06, 0.1)
-	_env.fog_density = 0.006
-	_env.fog_sky_affect = 0.4
-	var we := WorldEnvironment.new()
-	we.environment = _env
-	add_child(we)
-
-	var moon := DirectionalLight3D.new()
-	moon.light_color = Color(0.66, 0.73, 1.0)
-	moon.light_energy = 0.45
-	moon.rotation_degrees = Vector3(-48, -35, 0)
-	moon.shadow_enabled = true
-	moon.directional_shadow_max_distance = 140.0
-	moon.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
-	add_child(moon)
+	world = WorldEnv.new()
+	add_child(world)
+	world.weather_changed.connect(func(n): if hud and state == "play": hud.toast("الطقس: " + n, Color("9fd0ff")))
 
 
 func _build_rain() -> void:
@@ -364,8 +330,37 @@ func _load() -> void:
 	won_shown = bank >= Cfg.GOAL
 
 
+func _update_lamps() -> void:
+	var on := world.night > 0.35 or (world.cloud > 0.9 and world.night > 0.15)
+	if on != _lamps_on:
+		_lamps_on = on
+		for l in get_tree().get_nodes_in_group("street_lights"):
+			l.visible = on
+
+
+func _apply_quality() -> void:
+	world.apply_quality(quality, get_viewport())
+	city.set_detail_range(DETAIL_RANGE[quality])
+	cam.far = [600.0, 800.0, 1000.0, 1200.0][quality]
+
+
+func _load_quality() -> int:
+	var cf := ConfigFile.new()
+	if cf.load(SAVE_PATH) == OK:
+		return cf.get_value("settings", "quality", 2)
+	return 2
+
+
+func _save_quality() -> void:
+	var cf := ConfigFile.new()
+	cf.load(SAVE_PATH)
+	cf.set_value("settings", "quality", quality)
+	cf.save(SAVE_PATH)
+
+
 func _save() -> void:
 	var cf := ConfigFile.new()
+	cf.load(SAVE_PATH)
 	cf.set_value("game", "bank", bank)
 	cf.save(SAVE_PATH)
 
@@ -593,16 +588,25 @@ func _physics_process(dt: float) -> void:
 
 func _process(dt: float) -> void:
 	if Input.is_action_just_pressed("toggle_rain"):
-		rain_on = not rain_on
-		hud.toast("المطر: تشغيل" if rain_on else "المطر: إيقاف")
+		world.set_weather((world.weather + 1) % 4)
+	if Input.is_action_just_pressed("cycle_time"):
+		world.hour = fmod(world.hour + 3.0, 24.0)
+		hud.toast("الوقت: " + world.clock_text(), Color("ffd36b"))
+	if Input.is_action_just_pressed("cycle_quality"):
+		quality = (quality + 1) % 4
+		_apply_quality()
+		_save_quality()
+		hud.toast("الجودة: " + WorldEnv.QUALITY_NAMES[quality], Color("9fd0ff"))
 	if Input.is_action_just_pressed("toggle_mute"):
 		sfx.muted = not sfx.muted
 		hud.toast("الصوت: مكتوم" if sfx.muted else "الصوت: تشغيل")
 	if Input.is_action_just_pressed("horn") and state == "play":
 		sfx.horn()
 
-	cam.update_camera(dt)
-	_rain.emitting = rain_on
+	if cam.is_processing():
+		cam.update_camera(dt)
+	_rain.emitting = world.rain > 0.03
+	_rain.amount_ratio = clampf(world.rain, 0.05, 1.0)
 	_rain.global_position = cam.global_position + Vector3(0, 18, 0)
 	# المؤثرات البصرية للمتاجر
 	var k := 1.0 + sin(time * 3.0) * 0.08
@@ -615,8 +619,7 @@ func _process(dt: float) -> void:
 		s.glass_mat.albedo_color = s.def.color * (0.6 if open else 0.08)
 		s.glow.visible = open
 	city.safe_ring.scale = Vector3(k, 0.05, k)
-	for b in get_tree().get_nodes_in_group("blinkers"):
-		b.visible = fmod(time, 2.0) < 0.25
+	_update_lamps()
 
 	var siren := 0.0
 	if wanted > 0 and state == "play":
@@ -624,7 +627,7 @@ func _process(dt: float) -> void:
 			if c.chase:
 				siren = maxf(siren, pow(maxf(0.0, 1.0 - (c.pos2() - player_pos()).length() / 140.0), 1.5))
 	var car := player.car
-	sfx.update(siren, absf(car.speed) if car else 0.0, maxf(0.0, car.throttle) if car else 0.0, car != null and state == "play", rain_on and state != "menu")
+	sfx.update(siren, absf(car.speed) if car else 0.0, maxf(0.0, car.throttle) if car else 0.0, car != null and state == "play", world.rain > 0.05 and state != "menu")
 	if state != "menu":
 		hud.refresh(dt, _hint if state == "play" else "")
 
@@ -701,6 +704,56 @@ func _autotest() -> void:
 	for car in cars:
 		if car.global_basis.y.y < 0.5:
 			print("  FLIPPED ai=%d police=%s pos=%s up=%s" % [car.ai, car.police, car.global_position.snapped(Vector3(0.1, 0.1, 0.1)), car.global_basis.y.snapped(Vector3(0.01, 0.01, 0.01))])
+	get_tree().quit()
+
+
+## لقطات البيئة: أوقات وطقس مختلفة من زاوية ثابتة في الشارع
+func _envshots() -> void:
+	var out := "user://envshots"
+	var only := ""
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--out="):
+			out = a.substr(6)
+		if a.begins_with("--only="):
+			only = a.substr(7)
+	DirAccess.make_dir_recursive_absolute(out)
+	world.cycle_enabled = false
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--glassdebug="):
+			city.kit.glass_mat.set_shader_parameter("debug_mode", int(a.substr(13)))
+		if a.begins_with("--quality="):
+			quality = int(a.substr(10))
+			world.apply_quality(quality, get_viewport())
+	_on_start()
+	hud.visible = false
+	var spots := [
+		["street", Vector3(-129.5, 1.7, -180), Vector3(-131.5, 5.0, -110)],
+		["avenue", Vector3(-110, 1.6, 3.5), Vector3(-40, 6.0, -2.0)],
+		["corner", Vector3(-60, 2.2, -60), Vector3(-80, 8.0, -85)],
+		["aerial", Vector3(-150, 70, -150), Vector3(0, 0, 0)],
+	]
+	var looks := [["noon_clear", 12.5, 0], ["sunset", 17.9, 1], ["night_rain", 22.0, 2], ["night_storm", 1.0, 3]]
+	for spot in spots:
+		for lk in looks:
+			var name: String = "%s_%s" % [spot[0], lk[0]]
+			if only != "" and not name.contains(only):
+				continue
+			world.hour = lk[1]
+			world.set_weather(lk[2], true)
+			set_process(false)
+			cam.set_process(false)
+			cam.global_position = spot[1]
+			cam.look_at(spot[2])
+			await _frames(20)
+			_update_lamps()
+			await _frames(25)
+			await _shot("%s/%s.png" % [out, name])
+			if spot[0] == "street" and lk[0] == "noon_clear":
+				print("RENDER_INFO objects=%d primitives=%d draw_calls=%d vram_mb=%d" % [
+					RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_OBJECTS_IN_FRAME),
+					RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
+					RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
+					RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576])
 	get_tree().quit()
 
 
