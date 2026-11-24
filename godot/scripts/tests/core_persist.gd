@@ -1,6 +1,6 @@
 extends Node
 ## اختبار الحفظ الحقيقي على القرص عبر تشغيلين:
-##   المرحلة 1: godot --headless --path godot res://tests/core_persist.tscn -- --core-persist-test --phase=1
+##   المرحلة 1: godot --headless --path godot res://scenes/tests/core_persist.tscn -- --core-persist-test --phase=1
 ##   المرحلة 2: نفس الأمر مع --phase=2 (يتحقق من الاستعادة ومن الغسيل أثناء الإغلاق)
 
 

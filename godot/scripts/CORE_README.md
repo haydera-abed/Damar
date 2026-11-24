@@ -3,34 +3,38 @@
 طبقة منطق وبيانات مستقلة عن المشاهد: **Resources** للبيانات، **Autoloads** للحالة العامة، و**Signals** فقط للتواصل مع الواجهة.
 الميكانيكيات تحاكي ROB RUN كما تصفها أدلة اللاعبين، بأسماء أصلية للأماكن والشخصيات.
 
-## البنية
+## هيكلة المجلدات
 
 ```
-core/
-  resources/      بيانات (Custom Resources) قابلة للحفظ: to_dict / from_dict
-    state_data.gd        StateData      الولاية: 10 مقاطعات + وقت بدء الموسم
-    district_data.gd     DistrictData   مقاطعة بمستوى 1..3 + عشيرة مسيطرة + مستوطنات
-    settlement_data.gd   SettlementData مستوطنة (مالك لاعب/عشيرة/لا أحد) + نسبة ضريبة + قطع
-    land_plot_data.gd    LandPlotData   قطعة: الساكن، تاريخ الإيجار، المعدات (طاولة الغسيل…)
-    quest_data.gd        QuestData      مهمة يومية بشرط نفوذ
-    shipment_data.gd     ShipmentData   شحنة سوق سوداء (سعر، مدة وصول، نفوذ، مكافأة حصرية)
-    barter_recipe.gd     BarterRecipe   وصفة مقايضة (عناصر + كاش ← معدات)
-    heist_target_data.gd HeistTargetData هدف سطو (مدة، أداة، إنذار، جدول غنائم)
-    item_db.gd           ItemDB         كتالوج العناصر (قيمة البيع، «ساخنة» تُصادر)
-  data/
-    balance.gd           Balance        كل أرقام التوازن في مكان واحد
-    state_factory.gd     StateFactory   يولّد ولاية (4×م1، 4×م2، 2×م3؛ مستوطنتان × 10 قطع)
-  autoload/              (مسجّلة في project.godot بهذا الترتيب)
-    game_state.gd        GameState
-    land_manager.gd      LandManager      (+ اللابتوب التجاري)
-    economy_manager.gd   EconomyManager
-    travel_manager.gd    TravelManager
-    heist_city_manager.gd HeistCityManager
-    prison_manager.gd    PrisonManager
-    motel_manager.gd     MotelManager
-  ui/core_panel.gd       CorePanel  لوحة تستمع للإشارات فقط (مثال على الفصل)
-tests/core_tests.tscn    اختبار منطقي شامل (49 فحصاً)
-tests/core_persist.tscn  اختبار الحفظ الحقيقي على القرص عبر تشغيلين
+res://
+├── scripts/
+│   ├── resources/                 بيانات (Custom Resources) — to_dict / from_dict للحفظ
+│   │   ├── state_data.gd             StateData        الولاية: 10 مقاطعات + بداية الموسم
+│   │   ├── district_data.gd          DistrictData     مقاطعة م1..م3 + عشيرة + مستوطنات
+│   │   ├── settlement_data.gd        SettlementData   مستوطنة (مالك لاعب/عشيرة/لا أحد) + ضريبة + قطع
+│   │   ├── land_plot_data.gd         LandPlotData     قطعة: الساكن، تاريخ الإيجار، المعدات
+│   │   ├── city_district_data.gd     CityDistrictData حيّ في مدينة السطو: مبانٍ + سيارات تهريب
+│   │   ├── heist_target_data.gd      HeistTargetData  مبنى قابل للسطو (أداة، إنذار، هدف كبير، غنائم)
+│   │   ├── quest_data.gd             QuestData        مهمة يومية بشرط نفوذ
+│   │   ├── shipment_data.gd          ShipmentData     شحنة سوق سوداء
+│   │   ├── barter_recipe.gd          BarterRecipe     وصفة مقايضة
+│   │   └── item_db.gd                ItemDB           كتالوج العناصر
+│   ├── data/
+│   │   ├── balance.gd                Balance          كل أرقام التوازن
+│   │   └── state_factory.gd          StateFactory     مولّد الولايات
+│   ├── autoloads/                 (مسجّلة في project.godot بهذا الترتيب)
+│   │   ├── game_state.gd             GameState
+│   │   ├── land_manager.gd           LandManager      (+ اللابتوب التجاري)
+│   │   ├── economy_manager.gd        EconomyManager
+│   │   ├── travel_manager.gd         TravelManager
+│   │   ├── heist_city_manager.gd     HeistCityManager (المقابل الأصلي لـ LootyBayManager)
+│   │   ├── prison_manager.gd         PrisonManager
+│   │   └── motel_manager.gd          MotelManager     (المقابل الأصلي لـ LennyMotelManager)
+│   ├── ui/core_panel.gd           CorePanel: واجهة تستمع للإشارات فقط
+│   └── tests/                     سكربتات الاختبار
+└── scenes/
+    ├── ui/core_panel.tscn         مشهد اللوحة (اسحبه إلى أي مشهد)
+    └── tests/core_tests.tscn, core_persist.tscn
 ```
 
 ## الحفظ على مستويين
@@ -83,12 +87,16 @@ tests/core_persist.tscn  اختبار الحفظ الحقيقي على القر�
 - إشارات: `police_arrested` `sentenced` `authority_level_up` `released`.
 
 ### 5) مدينة السطو — `HeistCityManager` («ميناء سافيرن»)
-- 4 أحياء: وسط المدينة، الشاطئ المشمس، الحديقة، الميناء (الرابع افتراض — رسالة المواصفات انقطعت).
-- `start_heist(id)` يستهلك الأداة المطلوبة ويرفع الإنذار؛ الغنائم تذهب إلى حقيبة **غير مؤمّنة**.
-  الإنذار يستدعي الشرطة بمرور الوقت. `begin_extraction(point)` + ثبات 4 ثوانٍ ← تُنقل الغنائم إلى المخزون.
-  القبض عليك يُفقدك ما لم تُخرجه.
-- إشارات: `entered_city` `heist_started` `heist_progress` `heist_completed` `heist_failed` `alarm_raised`
-  `police_arrived` `extraction_started` `extraction_progress` `extracted` `loot_lost`.
+- 4 أحياء (`CityDistrictData`): وسط المدينة، الشاطئ المشمس، حي الحديقة، تلال الأرز — لكل حي مبانٍ وسيارة تهريب.
+- حالات اللاعب: `is_masked` (`set_masked`)، `is_wanted` (من `GameState.wanted`)، `bag_inventory` (غير مؤمّنة).
+- `start_heist(id)`: يستهلك الأداة ويرفع الإنذار. **بلا قناع** ترتفع مطلوبيتك (الكاميرات). **الأهداف الكبرى**
+  (خزنة البنك، قصر التلال) تطلق `city_alarm_triggered` وتجعلك مطلوباً بالمستوى 4 فوراً.
+- `extract_loot("fence_car", car_id, sell)`: ثبات 4 ثوانٍ عند سيارة تهريب ← تأمين الغنائم في المخزون (أو بيعها فوراً).
+  `extract_loot("city_exit")`: الخروج من المدينة (التنقل السريع) يؤمّنها تلقائياً — والخروج ممنوع وأنت مطلوب.
+- `on_player_busted_or_killed()`: **مقنّع داخل المدينة ← تُمسح الحقيبة كلها**؛ بلا قناع (لم يتعرّف عليك أحد) ← تبقى.
+- إشارات: `entered_city` `left_city` `mask_changed` `wanted_state_changed` `heist_started` `heist_progress`
+  `heist_completed` `heist_failed` `alarm_raised` `city_alarm_triggered` `police_arrived` `bag_changed`
+  `extraction_started` `extraction_progress` `extracted` `loot_lost`.
 
 ## ربط الواجهة
 الواجهة تستمع فقط، ولا يعرف أي مدير بوجودها:
@@ -98,13 +106,13 @@ func _ready() -> void:
     LandManager.land_error.connect(func(r): toast(r))
     PrisonManager.sentenced.connect(_on_sentenced)
 ```
-انظر `core/ui/core_panel.gd` كمثال كامل.
+انظر `scripts/ui/core_panel.gd` و`scenes/ui/core_panel.tscn` كمثال كامل.
 
 ## الاختبار
 ```
-godot --headless --path godot res://tests/core_tests.tscn -- --core-test
-godot --headless --path godot res://tests/core_persist.tscn -- --core-persist-test --phase=1
-godot --headless --path godot res://tests/core_persist.tscn -- --core-persist-test --phase=2
+godot --headless --path godot res://scenes/tests/core_tests.tscn -- --core-test
+godot --headless --path godot res://scenes/tests/core_persist.tscn -- --core-persist-test --phase=1
+godot --headless --path godot res://scenes/tests/core_persist.tscn -- --core-persist-test --phase=2
 ```
 
 ## الحالة الحالية (بصراحة)

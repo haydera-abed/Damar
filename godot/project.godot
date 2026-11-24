@@ -13,13 +13,13 @@ config/icon="res://icon.svg"
 
 [autoload]
 
-GameState="*res://core/autoload/game_state.gd"
-LandManager="*res://core/autoload/land_manager.gd"
-EconomyManager="*res://core/autoload/economy_manager.gd"
-TravelManager="*res://core/autoload/travel_manager.gd"
-HeistCityManager="*res://core/autoload/heist_city_manager.gd"
-PrisonManager="*res://core/autoload/prison_manager.gd"
-MotelManager="*res://core/autoload/motel_manager.gd"
+GameState="*res://scripts/autoloads/game_state.gd"
+LandManager="*res://scripts/autoloads/land_manager.gd"
+EconomyManager="*res://scripts/autoloads/economy_manager.gd"
+TravelManager="*res://scripts/autoloads/travel_manager.gd"
+HeistCityManager="*res://scripts/autoloads/heist_city_manager.gd"
+PrisonManager="*res://scripts/autoloads/prison_manager.gd"
+MotelManager="*res://scripts/autoloads/motel_manager.gd"
 
 [display]
 

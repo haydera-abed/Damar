@@ -44,7 +44,10 @@ func _ready() -> void:
 	PrisonManager.authority_level_up.connect(func(l, rw): _say("👑 نفوذ المستوى %d: %s" % [l, ", ".join(rw)]))
 	HeistCityManager.heist_completed.connect(func(t, loot): _show("heist", "حقيبة السطو: %d" % HeistCityManager.bag_value()); _say("💰 %s: %s" % [t, loot]))
 	HeistCityManager.extracted.connect(func(_i, v): _show("heist", "حقيبة السطو: 0"); _say("🚤 أُخرجت غنائم بقيمة %d" % v))
-	HeistCityManager.alarm_raised.connect(func(l, d): _say("🚨 إنذار %d في %s" % [l, HeistCityManager.DISTRICTS[d]]))
+	HeistCityManager.alarm_raised.connect(func(l, d): _say("🚨 إنذار %d في %s" % [l, HeistCityManager.district_name(d)]))
+	HeistCityManager.city_alarm_triggered.connect(func(t, d): _say("📢 إنذار عام في المدينة! (%s — %s)" % [t, HeistCityManager.district_name(d)]))
+	HeistCityManager.loot_lost.connect(func(v): _say("💀 خسرت غنائم بقيمة %d" % v))
+	HeistCityManager.mask_changed.connect(func(m): _say("🎭 القناع: %s" % ("ملبوس" if m else "منزوع")))
 
 
 func _show(key: String, text: String) -> void:

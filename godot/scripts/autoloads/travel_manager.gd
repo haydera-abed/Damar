@@ -28,8 +28,6 @@ func can_travel(to_hub: Hub) -> String:
 		return "لا تنقل سريع وأنت مطلوب — اختفِ أولاً"
 	if to_hub == Hub.HOME and not LandManager.has_home():
 		return "لا تملك قاعدة: استأجر قطعة أرض أولاً"
-	if current_hub == Hub.HEIST_CITY and HeistCityManager.has_unextracted():
-		return "معك غنائم لم تُخرجها — توجّه إلى نقطة إخراج"
 	return ""
 
 
@@ -39,6 +37,8 @@ func travel_to(to_hub: Hub, instant := false) -> bool:
 		travel_denied.emit(to_hub, why)
 		return false
 	traveling = true
+	if current_hub == Hub.HEIST_CITY:
+		HeistCityManager.leave_city()          # الخروج من المدينة يؤمّن الغنائم (Extraction)
 	travel_started.emit(current_hub, to_hub, 0.0 if instant else TRAVEL_SECONDS)
 	if instant:
 		_arrive(to_hub)

@@ -1,6 +1,6 @@
 extends Node
 ## اختبار آلي لطبقة المنطق (core) بلا رسوميات:
-##   godot --headless --path godot res://tests/core_tests.tscn -- --core-test
+##   godot --headless --path godot res://scenes/tests/core_tests.tscn -- --core-test
 ## يطبع "CORE …" لكل خطوة و"CORE RESULT pass/fail" في النهاية. لا يكتب على ملفات حفظ اللاعب.
 
 var fails := 0
@@ -40,29 +40,47 @@ func _ready() -> void:
 	GameState.set_wanted(0)
 	check("travel_heist_city", TravelManager.travel_to(TravelManager.Hub.HEIST_CITY, true) and HeistCityManager.in_city())
 
-	# 5) السطو والإخراج
+	# 5) مدينة السطو: القناع، الإنذار العام، الحقيبة غير المؤمّنة، القبض، والتأمين
+	var city_alarms: Array = []
+	HeistCityManager.city_alarm_triggered.connect(func(t: String, _d: String) -> void: city_alarms.append(t))
+	check("four_districts", HeistCityManager.districts.size() == 4, str(HeistCityManager.districts.map(func(d): return d.display_name)))
 	GameState.add_item("lockpick", 2)
 	GameState.add_item("drill", 1)
+	HeistCityManager.set_masked(true)
 	check("heist_needs_tool_ok", HeistCityManager.start_heist("dt_jewelry"))
 	HeistCityManager.step(8.0)
-	check("loot_unsecured", HeistCityManager.has_unextracted() and GameState.item_count("jewelry") == 0, str(HeistCityManager.bag))
-	check("cannot_leave_with_loot", TravelManager.can_travel(TravelManager.Hub.SALES_CENTER) != "")
+	check("loot_unsecured", HeistCityManager.has_unextracted() and GameState.item_count("jewelry") == 0, str(HeistCityManager.bag_inventory))
 	check("cooldown", not HeistCityManager.start_heist("dt_jewelry"))
 	HeistCityManager.start_heist("dt_bank")
+	check("city_alarm_on_major", city_alarms == ["dt_bank"] and GameState.wanted >= HeistCityManager.CITY_ALARM_WANTED and HeistCityManager.is_wanted, "wanted=%d" % GameState.wanted)
 	HeistCityManager.step(15.0)
-	HeistCityManager.step(10.0)
-	check("alarm_brings_police", GameState.wanted > 0, "wanted=%d" % GameState.wanted)
-	var bagv := HeistCityManager.bag_value()
-	HeistCityManager.begin_extraction("ex_tunnel")
+	check("travel_denied_wanted_in_city", TravelManager.can_travel(TravelManager.Hub.SALES_CENTER) != "")
+	var masked_bag := HeistCityManager.bag_value()
+	var lost_masked := HeistCityManager.on_player_busted_or_killed()
+	check("busted_masked_wipes_bag", lost_masked == masked_bag and lost_masked > 0 and not HeistCityManager.has_unextracted(), "lost=%d" % lost_masked)
+	GameState.set_wanted(0)
+	HeistCityManager.start_heist("sb_kiosk")                # بلا قناع
+	HeistCityManager.step(5.0)
+	var kept := HeistCityManager.bag_value()
+	HeistCityManager.on_player_busted_or_killed()
+	check("busted_unmasked_keeps_bag", HeistCityManager.bag_value() == kept and kept > 0, "kept=%d" % kept)
+	GameState.set_wanted(0)
+	check("extract_fence_car", HeistCityManager.extract_loot("fence_car", "fc_beach_pier"))
 	HeistCityManager.step(Balance.EXTRACTION_HOLD + 0.1)
-	check("extracted_secured", not HeistCityManager.has_unextracted() and GameState.item_count("jewelry") > 0 and GameState.wanted == 0, "value=%d" % bagv)
+	check("extracted_secured", not HeistCityManager.has_unextracted() and GameState.item_count("cash_bundle") > 0 and GameState.wanted == 0)
+	HeistCityManager.start_heist("pk_cafe")
+	HeistCityManager.step(5.0)
+	GameState.set_wanted(0)
+	var cafe := HeistCityManager.bag_value()
+	var cash_items_before := GameState.item_count("cash_bundle")
 
-	# المبيعات
-	check("sell_only_at_center", EconomyManager.sell_item("jewelry") == 0)
+	# المبيعات (الخروج من المدينة يؤمّن ما في الحقيبة تلقائياً)
+	check("sell_only_at_center", EconomyManager.sell_item("cash_bundle") == 0)
 	TravelManager.travel_to(TravelManager.Hub.SALES_CENTER, true)
+	check("city_exit_extracts", not HeistCityManager.has_unextracted() and GameState.item_count("cash_bundle") > cash_items_before, "cafe=%d" % cafe)
 	var sold := EconomyManager.sell_all_loot()
 	# قد تكتمل مهمة «بِع غنائم» فتضيف مكافأتها للكاش
-	check("sold_loot_dirty_cash", sold > 0 and EconomyManager.dirty_cash >= sold and GameState.item_count("jewelry") == 0, "sold=%d cash=%d" % [sold, EconomyManager.dirty_cash])
+	check("sold_loot_dirty_cash", sold > 0 and EconomyManager.dirty_cash >= sold and GameState.item_count("cash_bundle") == 0, "sold=%d cash=%d" % [sold, EconomyManager.dirty_cash])
 
 	# 3) الموتيل: الخزنة، المقايضة، الروليت، الشحنات، المهام
 	TravelManager.travel_to(TravelManager.Hub.MOTEL, true)
