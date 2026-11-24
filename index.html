@@ -17,7 +17,9 @@
   <div id="hud" class="hidden">
     <div id="topRight" class="panel">
       <div class="line"><span>معك</span><b id="cash">$0</b></div>
-      <div class="line"><span>في المخبأ</span><b id="bank">$0</b></div>
+      <div class="line"><span>مجوهرات</span><b id="goods" class="pur">$0</b></div>
+      <div class="line"><span>قذر في المخبأ</span><b id="dirty" class="dirty">$0</b></div>
+      <div class="line"><span>نظيف</span><b id="bank">$0</b></div>
       <div class="goal">
         <div class="bar"><i id="goalFill"></i></div>
         <small id="goalText"></small>
@@ -36,6 +38,8 @@
     </div>
 
     <div id="toast"></div>
+    <div id="cross" class="hidden"></div>
+    <div id="hurt"></div>
 
     <div id="bottomCenter">
       <div id="progress" class="hidden">
@@ -49,6 +53,8 @@
 
     <div id="bottomRight">
       <div id="speedo" class="hidden"><b id="kmh">0</b><small>كم/س</small></div>
+      <div id="tags"><div id="maskTag"></div><div id="weapon"></div></div>
+      <div id="hpWrap"><small>الصحة</small><div class="bar"><i id="hpFill"></i></div></div>
       <div id="stamWrap"><small>اللياقة</small><div class="bar"><i id="stamFill"></i></div></div>
     </div>
   </div>
@@ -58,7 +64,8 @@
       <h1>دمار</h1>
       <h2>مطاردة الليل</h2>
       <p class="lead">اسرق المتاجر والبنوك في مدينة لا تنام، اهرب من الشرطة، وخبّئ غنيمتك في المخبأ.
-        اجمع <b>$250,000</b> لتصبح أخطر لص في المدينة.</p>
+        بِع المجوهرات عند <b class="pur">المشتري</b>، واغسل المال القذر في <b class="cy">المغسلة</b>.
+        اجمع <b>$250,000</b> نظيفة لتصبح أخطر لص في المدينة.</p>
       <div class="controls">
         <div><kbd>W A S D</kbd> الحركة / القيادة</div>
         <div><kbd>الفأرة</kbd> تدوير الكاميرا</div>
@@ -67,8 +74,13 @@
         <div><kbd>F</kbd> ركوب / نزول السيارة</div>
         <div><kbd>Space</kbd> فرامل اليد</div>
         <div><kbd>H</kbd> البوق</div>
+        <div><kbd>X</kbd> القناع</div>
+        <div><kbd>Q</kbd> إشهار المسدس &nbsp; <kbd>نقرة</kbd> إطلاق</div>
+        <div><kbd>B</kbd> شراء مسدس (عند المشتري)</div>
+        <div><kbd>Z</kbd> الاستسلام</div>
         <div><kbd>R</kbd> المطر &nbsp; <kbd>M</kbd> الصوت</div>
       </div>
+      <p class="tip">🎭 اسرق بالقناع وإلا صوّرتك الكاميرات (+نجمة)، لكن انزعه بعد الهرب: الشرطة تشتبه بالمقنّعين، وبدونه تختفي النجوم أسرع.</p>
       <p class="tip">💡 الأزقة الضيقة بين المباني لا تدخلها سيارات الشرطة. ابتعد عن أنظارهم لتختفي النجوم، ولا يمكنك الإيداع وأنت مطلوب.</p>
       <button id="startBtn">ابدأ اللعب</button>
     </div>

@@ -14,6 +14,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #05070d; c
 #topRight .line { display: flex; justify-content: space-between; gap: 18px; font-size: 18px; }
 #topRight .line span { opacity: .7; }
 #topRight b { font-weight: 900; color: #7dff9e; }
+#topRight b.pur, .lead b.pur { color: #c99bff; }
+#topRight b.dirty { color: #e0c070; }
+.lead b.cy { color: #7fe6ff; }
 #topRight .goal { margin-top: 6px; }
 #topRight .goal small { opacity: .65; font-size: 12px; }
 
@@ -52,7 +55,16 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #05070d; c
   align-items: center; justify-content: center; border: 3px solid rgba(255,255,255,.15); margin-bottom: 10px; }
 #speedo b { font-size: 40px; font-weight: 900; line-height: 1; direction: ltr; }
 #speedo small { opacity: .6; }
-#stamWrap { width: 160px; }
+#stamWrap, #hpWrap { width: 160px; }
+#hpWrap { margin-bottom: 6px; }
+#hpWrap small { opacity: .6; font-size: 12px; }
+#hpFill { background: linear-gradient(90deg, #ff5a5a, #ff9a7a); width: 100%; }
+#tags { font-weight: 700; font-size: 15px; margin-bottom: 6px; text-shadow: 0 0 6px #000; }
+#tags div:empty { display: none; }
+#cross { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; transform: translate(-50%, -50%);
+  border: 2px solid rgba(255,255,255,.85); border-radius: 50%; box-shadow: 0 0 4px #000; }
+#cross::after { content: ''; position: absolute; left: 50%; top: 50%; width: 3px; height: 3px; margin: -1.5px; background: #fff; border-radius: 50%; }
+#hurt { position: absolute; inset: 0; opacity: 0; background: radial-gradient(ellipse at center, transparent 45%, rgba(200,0,0,.65)); }
 #stamWrap small { opacity: .6; font-size: 12px; }
 #stamFill { background: linear-gradient(90deg, #3ab4ff, #80e0ff) !important; }
 
@@ -81,4 +93,16 @@ button:hover { filter: brightness(1.12); }
   .card h1 { font-size: 46px; }
   #minimap { width: 130px; height: 130px; }
   #topRight { min-width: 0; }
+}
+
+/* القائمة أطول بعد الأنظمة الجديدة: نسمح بالتمرير ونضغطها على الشاشات القصيرة */
+.overlay { overflow-y: auto; align-items: flex-start; }
+.overlay .card { margin: auto; }
+@media (max-height: 820px) {
+  .card { padding: 18px 24px; }
+  .card h1 { font-size: 46px; }
+  .card h2 { font-size: 18px; margin-bottom: 6px; }
+  .card p { margin: 6px 0; line-height: 1.6; font-size: 14px; }
+  .controls { margin: 10px 0; gap: 4px 18px; font-size: 14px; }
+  button { margin-top: 6px; padding: 10px 40px; }
 }

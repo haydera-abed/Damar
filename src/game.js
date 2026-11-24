@@ -22,11 +22,12 @@ const BOUND = HALF + ROAD / 2 - 1.2;
 const LANE = 3.6;            // إزاحة المسار عن منتصف الشارع
 const GOAL = 250000;
 const POLICE_TARGET = [2, 2, 3, 5, 7, 9];
+const PISTOL_PRICE = 3000, LAUNDER_FEE = 0.2, MAG = 12;
 
 const STORE_TYPES = {
   shop:  { name: 'سوبرماركت',     value: [700, 1600],    time: 4,  heat: 1, cd: 60,  color: 0x30d5ff, h: 7 },
   gas:   { name: 'محطة وقود',     value: [1100, 2600],   time: 5,  heat: 2, cd: 75,  color: 0xffa21f, h: 7 },
-  jewel: { name: 'مجوهرات',       value: [7000, 15000],  time: 7,  heat: 3, cd: 120, color: 0xff3fd0, h: 9 },
+  jewel: { name: 'مجوهرات',       value: [7000, 15000],  time: 7,  heat: 3, cd: 120, color: 0xff3fd0, h: 9, goods: true },
   bank:  { name: 'البنك المركزي', value: [30000, 60000], time: 10, heat: 5, cd: 200, color: 0x45ff8a, h: 16 },
 };
 const STORE_LIST = ['bank', 'jewel', 'jewel', 'gas', 'gas', 'gas', 'shop', 'shop', 'shop', 'shop', 'shop', 'shop'];
@@ -369,6 +370,16 @@ const stores = [];
   }
 }
 const safe = makeSafehouse(safeLot);
+// المشتري (يشتري البضائع المسروقة ويبيع المسدسات) ومغسلة الأموال
+const [fence, laundry] = (() => {
+  const out = [];
+  const pool = lots.filter((l) => !used.has(lotKey(l))).sort((a, b) => Math.hypot(b.lx - safe.x, b.lz - safe.z) - Math.hypot(a.lx - safe.x, a.lz - safe.z));
+  const pick = (pred) => { const l = pool.find((l) => !used.has(lotKey(l)) && pred(l)); used.add(lotKey(l)); return l; };
+  const lf = pick((l) => l.bi >= N - 2 && l.bj <= 2);
+  const ll = pick((l) => l.bi <= 2 && l.bj >= N - 2);
+  out.push(makeSafehouse(lf, 'المشتري', 0xb26bff, 0x231d2b), makeSafehouse(ll, 'مغسلة النور', 0x3dd8ff, 0x1f2a30));
+  return out;
+})();
 
 // باقي المباني
 for (const l of lots) {
@@ -419,23 +430,23 @@ function makeStore(type, l) {
   return { type, def, ...zone, sx: l.sx, cooldown: 0, signMat, glassMat, ring, beacon, col };
 }
 
-function makeSafehouse(l) {
-  const w = 19, h = 6;
-  const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), std({ color: 0x2b2a27, roughness: 0.9 }));
+function makeSafehouse(l, label = 'المخبأ', hex = 0x3dff7a, body = 0x2b2a27) {
+  const w = 19, h = 6, cl = new THREE.Color(hex);
+  const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), std({ color: body, roughness: 0.9 }));
   b.position.set(l.lx, h / 2, l.lz); b.castShadow = b.receiveShadow = true; scene.add(b);
   addCollider(l.lx, l.lz, w, w, h);
   const face = l.lx + l.sx * (w / 2), rotY = l.sx > 0 ? Math.PI / 2 : -Math.PI / 2;
   const door = new THREE.Mesh(new THREE.PlaneGeometry(8, 4), std({ color: 0x6d7076, roughness: 0.5, metalness: 0.6 }));
   door.position.set(face + l.sx * 0.03, 2, l.lz); door.rotation.y = rotY; scene.add(door);
-  const sign = new THREE.Mesh(new THREE.PlaneGeometry(7, 1.6), new THREE.MeshBasicMaterial({ map: signTex('المخبأ', 0x3dff7a), color: new THREE.Color(1.7, 1.7, 1.7) }));
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(7, 1.6), new THREE.MeshBasicMaterial({ map: signTex(label, hex), color: new THREE.Color(1.7, 1.7, 1.7) }));
   sign.position.set(face + l.sx * 0.06, 4.9, l.lz); sign.rotation.y = rotY; scene.add(sign);
   const zone = { x: l.lx + l.sx * 13.6, z: l.lz };
-  const ring = new THREE.Mesh(new THREE.RingGeometry(2.2, 2.8, 40), new THREE.MeshBasicMaterial({ color: new THREE.Color(0.4, 2.4, 0.8), transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+  const ring = new THREE.Mesh(new THREE.RingGeometry(2.2, 2.8, 40), new THREE.MeshBasicMaterial({ color: cl.clone().multiplyScalar(2.2), transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
   ring.rotation.x = -Math.PI / 2; ring.position.set(zone.x, 0.2, zone.z); scene.add(ring);
   const beacon = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 70, 12, 1, true),
-    new THREE.MeshBasicMaterial({ color: 0x3dff7a, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
   beacon.position.set(zone.x, 35, zone.z); scene.add(beacon);
-  return { ...zone, sx: l.sx, ring };
+  return { ...zone, sx: l.sx, ring, hex };
 }
 
 // علامات الطرق وممرات المشاة
@@ -583,9 +594,34 @@ function makeHuman(o) {
   const actions = {};
   for (const k of ['idle', 'walk', 'run', 'rob']) actions[k] = mixer.clipAction(clipOf(k));
   actions.idle.play();
+  // قناع ومسدس مثبّتان على عظمتي الرأس واليد اليمنى (يتبعان الحركة)
+  let mask = null, gun = null;
+  if (o.gear) {
+    g.updateMatrixWorld(true);
+    let head = null, hand = null;
+    root.traverse((b) => { if (!b.isBone) return; if (/^Head$/.test(b.name)) head = b; if (/^Palm\.?R$/.test(b.name)) hand = b; });
+    const ws = new THREE.Vector3();
+    if (head) {
+      head.getWorldScale(ws); const k = 1 / ws.x;
+      mask = new THREE.Group(); mask.scale.setScalar(k); mask.position.set(0, 0.13 * k, 0.015 * k);
+      const cloth = std({ color: 0x0b0b0d, roughness: 0.95 });
+      const m1 = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.3, 0.26), cloth); m1.castShadow = true; mask.add(m1);
+      const eyes = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.045, 0.02), new THREE.MeshBasicMaterial({ color: 0xd9c3a5 }));
+      eyes.position.set(0, 0.035, 0.13); mask.add(eyes);
+      mask.visible = false; head.add(mask);
+    }
+    if (hand) {
+      hand.getWorldScale(ws); const k = 1 / ws.x;
+      gun = new THREE.Group(); gun.scale.setScalar(k); gun.position.set(0, 0.06 * k, 0.02 * k);
+      const metal = std({ color: 0x1a1b1e, roughness: 0.35, metalness: 0.8 });
+      const sl = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.05, 0.2), metal); sl.position.set(0, 0.03, 0.05);
+      const gr = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.1, 0.045), metal); gr.position.set(0, -0.02, -0.02); gr.rotation.x = 0.25;
+      gun.add(sl, gr); gun.visible = false; hand.add(gun);
+    }
+  }
   let bag = null;
   if (o.bag) { bag = new THREE.Mesh(BAG_GEO, std({ color: 0x3e4a2a, roughness: 1 })); bag.position.set(0, 1.25, -0.24); bag.castShadow = true; bag.visible = false; g.add(bag); }
-  return { g, mixer, actions, cur: 'idle', bag };
+  return { g, mixer, actions, cur: 'idle', bag, mask, gun };
 }
 function animHuman(H, speed, dt, rob = false) {
   const want = rob ? 'rob' : speed > 5.4 ? 'run' : speed > 0.35 ? 'walk' : 'idle';
@@ -697,14 +733,17 @@ let time = 0, state = 'menu';
 const cars = [], officers = [];
 const W = { level: 0, lastSeen: 0, crimeCd: 0 };
 let spawnT = 0, arrest = 0, shake = 0, robbing = null, robProg = 0, wonShown = false;
-let cash = 0, bank = 0;
-try { bank = JSON.parse(localStorage.getItem('damar_save') || '{}').bank || 0; } catch (e) { bank = 0; }
+let cash = 0, bank = 0, dirty = 0, goods = 0;          // نقد قذر معك، نظيف في المخبأ، قذر في المخبأ، بضائع
+const gun = { owned: false, drawn: false, ammo: MAG, reloadT: 0, cd: 0 };
+let fenceRate = 0.8, fenceT = 0, launderAcc = 0, bustReason = '';
+try { const sv = JSON.parse(localStorage.getItem('damar_save') || '{}'); bank = sv.bank || 0; dirty = sv.dirty || 0; } catch (e) { bank = 0; }
 if (bank >= GOAL) wonShown = true;
-const save = () => { try { localStorage.setItem('damar_save', JSON.stringify({ bank })); } catch (e) { /* بلا حفظ */ } };
+const save = () => { try { localStorage.setItem('damar_save', JSON.stringify({ bank, dirty })); } catch (e) { /* بلا حفظ */ } };
 
 const player = {
   pos: new THREE.Vector2(safe.x, safe.z), vel: new THREE.Vector2(), facing: 0, stamina: 1, car: null,
-  H: makeHuman({ role: 'thief', bag: true }),
+  H: makeHuman({ role: 'thief', bag: true, gear: true }),
+  hp: 100, regenT: 0, masked: false, surrender: false,
 };
 player.H.g.visible = false;
 scene.add(player.H.g);
@@ -718,6 +757,13 @@ const headTarget = new THREE.Object3D();
 scene.add(headlight, headTarget); headlight.target = headTarget;
 const copLights = [];
 for (let i = 0; i < 4; i++) { const l = new THREE.PointLight(0xff0000, 0, 32, 1.5); scene.add(l); copLights.push(l); }
+const muzzle = new THREE.PointLight(0xffc070, 0, 14, 2); scene.add(muzzle);
+const tracers = [], bodies = [];
+const TRACER_MAT = new THREE.LineBasicMaterial({ color: new THREE.Color(3, 2.2, 1), transparent: true, opacity: 0.9 });
+function tracer(a, b) {
+  const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+  const l = new THREE.Line(g, TRACER_MAT); scene.add(l); tracers.push({ l, t: 0.07 });
+}
 
 // ------------------------------------------------------------------ إنشاء المركبات
 function randomSegment() {
@@ -834,7 +880,7 @@ function policeAI(c, dt) {
 }
 function spawnOfficer(c) {
   const fx = Math.sin(c.h), fz = Math.cos(c.h);
-  const o = { car: c, pos: new THREE.Vector2(c.pos.x + fz * 1.8, c.pos.y - fx * 1.8), vel: new THREE.Vector2(), H: makeHuman(COP), facing: c.h, ret: false };
+  const o = { car: c, pos: new THREE.Vector2(c.pos.x + fz * 1.8, c.pos.y - fx * 1.8), vel: new THREE.Vector2(), H: makeHuman(COP), facing: c.h, ret: false, hp: 100, shootT: mr(1.2, 2.2) };
   scene.add(o.H.g); officers.push(o); c.officer = o;
 }
 function updateOfficers(dt) {
@@ -857,8 +903,73 @@ function updateOfficers(dt) {
     else if (!o.ret) o.facing = Math.atan2(dx, dz);
     o.H.g.position.set(o.pos.x, 0, o.pos.y); o.H.g.rotation.y = o.facing;
     animHuman(o.H, sp, dt, !o.ret && d < 4);
+    // من 3 نجوم فما فوق يطلق الضباط النار على اللص الراجل (إلا إن استسلم)
+    if (!o.ret && W.level >= 3 && !player.car && !player.surrender && state === 'play') {
+      o.shootT -= dt;
+      if (o.shootT <= 0 && dP < 24 && segHit(o.pos.x, o.pos.y, P.x, P.y, 1.5) >= 1) { o.shootT = mr(0.9, 1.7); copShoot(o, dP); }
+    }
     if (o.ret && dist2(o.pos, o.car.pos.x, o.car.pos.y) < 2.7) { removeOfficer(o); o.car.exitCd = 5; }
   }
+}
+function copShoot(o, d) {
+  const from = new THREE.Vector3(o.pos.x + Math.sin(o.facing) * 0.5, 1.4, o.pos.y + Math.cos(o.facing) * 0.5);
+  const fast = player.vel.length() > 6;
+  const hitP = clamp(0.55 - d * 0.012 - (fast ? 0.2 : 0), 0.12, 0.6);
+  const hit = Math.random() < hitP;
+  const to = new THREE.Vector3(player.pos.x + (hit ? 0 : mr(-1.6, 1.6)), hit ? 1.25 : mr(0.3, 2.2), player.pos.y + (hit ? 0 : mr(-1.6, 1.6)));
+  tracer(from, to); muzzle.position.copy(from); muzzle.intensity = 40;
+  sound.shot(0.6 * Math.max(0.25, 1 - d / 40));
+  if (hit) playerHit(mr(8, 13));
+}
+function playerHit(dmg) {
+  player.hp -= dmg; player.regenT = 0; shake = Math.max(shake, 0.35);
+  ui.hurt.style.opacity = 0.75;
+  if (player.hp <= 0) { player.hp = 0; bustReason = 'أُصبت وسقطت أرضاً.'; bust(); }
+}
+function downOfficer(o) {
+  removeOfficer(o);
+  scene.add(o.H.g);
+  o.H.g.rotation.order = 'YXZ'; o.H.g.rotation.set(-Math.PI / 2, o.facing, 0); o.H.g.position.y = 0.2;
+  o.H.actions[o.H.cur].stop();
+  bodies.push({ H: o.H, t: 14 });
+  if (o.car) o.car.exitCd = 2;
+}
+function shoot() {
+  if (!gun.drawn || gun.cd > 0 || gun.reloadT > 0 || player.car || player.surrender) return;
+  if (gun.ammo <= 0) { gun.reloadT = 1.4; return; }
+  gun.ammo--; gun.cd = 0.24;
+  const o = camera.position.clone(), dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  const R = 90;
+  let best = segHit(o.x, o.z, o.x + dir.x * R, o.z + dir.z * R, 2) * R, hit = null;
+  if (dir.y < -1e-3) best = Math.min(best, -o.y / dir.y);
+  const v = new THREE.Vector3();
+  const minT = camera.position.distanceTo(new THREE.Vector3(player.pos.x, 1.4, player.pos.y)) + 0.4;
+  // اختبار أسطوانة رأسية (جسم الشرطي أو السيارة): أقرب نقطة أفقياً ثم التحقق من الارتفاع
+  const h2 = Math.hypot(dir.x, dir.z) || 1e-6;
+  const test = (x, z, r, top) => {
+    const t = ((x - o.x) * dir.x + (z - o.z) * dir.z) / (h2 * h2);
+    if (t < minT || t > best) return -1;
+    const px = o.x + dir.x * t, py = o.y + dir.y * t, pz = o.z + dir.z * t;
+    return Math.hypot(px - x, pz - z) < r && py > 0 && py < top ? t : -1;
+  };
+  for (const q of officers) { const t = test(q.pos.x, q.pos.y, 0.45, 1.85); if (t > 0) { best = t; hit = q; } }
+  let carHit = null;
+  for (const c of cars) { if (c === player.car) continue; const t = test(c.pos.x, c.pos.y, 1.5, 1.6); if (t > 0) { best = t; hit = null; carHit = c; } }
+  const end = o.clone().addScaledVector(dir, best);
+  const mz = new THREE.Vector3(); (player.H.gun || player.H.g).getWorldPosition(mz);
+  tracer(mz, end); muzzle.position.copy(mz); muzzle.intensity = 60;
+  sound.shot(1);
+  if (hit) {
+    hit.hp -= 50; hit.vel.set(0, 0);
+    if (hit.hp <= 0) { downOfficer(hit); setWanted(Math.max(W.level + 1, 3), 'أسقطت شرطياً! (+نجمة)'); }
+    else setWanted(Math.max(W.level, 3), 'أطلقت النار على شرطي!');
+    W.lastSeen = 0;
+  } else if (carHit && carHit.police) { setWanted(Math.max(W.level, 3), 'أطلقت النار على سيارة شرطة!'); W.lastSeen = 0; }
+  else {
+    const heard = cars.some((c) => c.police && dist2(c.pos, player.pos.x, player.pos.y) < 90) || officers.some((q) => dist2(q.pos, player.pos.x, player.pos.y) < 60);
+    if (heard) { if (W.level < 2) setWanted(2, 'سُمع إطلاق نار! الشرطة في الطريق'); W.lastSeen = 0; }
+  }
+  if (gun.ammo <= 0) gun.reloadT = 1.4;
 }
 function pushFromCars(p, r, ignore) {
   for (const c of cars) {
@@ -943,6 +1054,14 @@ const sound = {
     g.gain.setValueAtTime(Math.min(0.5, v), t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
     s.connect(lp); lp.connect(g); g.connect(this.master); s.start(t); s.stop(t + 0.4);
   },
+  shot(v = 1) {
+    if (!this.ctx) return;
+    const s = this.ctx.createBufferSource(), g = this.ctx.createGain(), lp = this.ctx.createBiquadFilter(), t = this.ctx.currentTime;
+    s.buffer = this.noise; s.playbackRate.value = 0.7; lp.type = 'lowpass'; lp.frequency.value = 2600;
+    g.gain.setValueAtTime(0.55 * v, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    s.connect(lp); lp.connect(g); g.connect(this.master); s.start(t); s.stop(t + 0.25);
+    this.beep(120, 0.12, 'sine', 0.25 * v);
+  },
   toggle() { this.muted = !this.muted; if (this.master) this.master.gain.value = this.muted ? 0 : 0.8; },
 };
 let lastCrash = 0;
@@ -985,13 +1104,14 @@ let locked = false, dragging = false, hadLock = false;
 canvas.addEventListener('mousedown', () => {
   if (state !== 'play') return;
   dragging = true;
+  if (locked && gun.drawn) { shoot(); return; }
   if (!locked && canvas.requestPointerLock) { try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* السحب يكفي */ } }
 });
 addEventListener('mouseup', () => { dragging = false; });
 addEventListener('mousemove', (e) => {
   if (state !== 'play' || !(locked || dragging)) return;
   cam.yaw -= e.movementX * 0.0026;
-  cam.pitch = clamp(cam.pitch + e.movementY * 0.002, -0.05, 1.1);
+  cam.pitch = clamp(cam.pitch + e.movementY * 0.002, gun.drawn ? -0.35 : -0.05, 1.1);
   cam.lastMouse = time;
 });
 document.addEventListener('pointerlockchange', () => {
@@ -1005,7 +1125,7 @@ const K = (...c) => c.some((k) => keys[k]);
 // ------------------------------------------------------------------ واجهة المستخدم
 const $ = (id) => document.getElementById(id);
 const ui = {};
-['cash', 'bank', 'goalFill', 'goalText', 'stars', 'wantedText', 'loseBar', 'loseFill', 'arrest', 'arrestFill', 'toast', 'progress', 'progLabel', 'progFill', 'hint', 'speedo', 'kmh', 'stamFill', 'stamWrap'].forEach((k) => (ui[k] = $(k)));
+['cash', 'bank', 'goalFill', 'goalText', 'stars', 'wantedText', 'loseBar', 'loseFill', 'arrest', 'arrestFill', 'toast', 'progress', 'progLabel', 'progFill', 'hint', 'speedo', 'kmh', 'stamFill', 'stamWrap', 'goods', 'dirty', 'hpFill', 'weapon', 'maskTag', 'cross', 'hurt'].forEach((k) => (ui[k] = $(k)));
 const starEls = [...ui.stars.children];
 const uiCache = {};
 const setText = (el, key, v) => { if (uiCache[key] !== v) { uiCache[key] = v; el.textContent = v; } };
@@ -1024,6 +1144,14 @@ function setWanted(lvl, msg) {
 function updateHUD(dt) {
   setText(ui.cash, 'cash', fmt(cash));
   setText(ui.bank, 'bank', fmt(bank));
+  setText(ui.goods, 'goods', fmt(goods));
+  setText(ui.dirty, 'dirty', fmt(dirty));
+  ui.hpFill.style.width = player.hp + '%';
+  ui.hpFill.style.background = player.hp < 35 ? '#ff3b3b' : '';
+  setText(ui.weapon, 'wp', !gun.owned ? '' : gun.drawn ? (gun.reloadT > 0 ? '🔫 إعادة تعبئة…' : `🔫 ${gun.ammo} / ${MAG}`) : '🔫 في الحزام (Q)');
+  setText(ui.maskTag, 'mk', player.surrender ? '🙌 مستسلم' : player.masked ? '🎭 مقنّع' : '');
+  ui.cross.classList.toggle('hidden', !(gun.drawn && !player.car));
+  ui.hurt.style.opacity = Math.max(0, parseFloat(ui.hurt.style.opacity || 0) - dt * 1.5);
   ui.goalFill.style.width = Math.min(100, (bank / GOAL) * 100) + '%';
   setText(ui.goalText, 'goal', `الهدف: ${fmt(GOAL)}`);
   starEls.forEach((s, i) => s.classList.toggle('on', i < W.level));
@@ -1040,6 +1168,7 @@ function updateHUD(dt) {
   ui.stamFill.style.width = player.stamina * 100 + '%';
   ui.progress.classList.toggle('hidden', !robbing);
   if (robbing) { setText(ui.progLabel, 'pl', `جارٍ سرقة ${robbing.def.name}…`); ui.progFill.style.width = robProg * 100 + '%'; }
+  else if (launderAcc > 0) { ui.progress.classList.remove('hidden'); setText(ui.progLabel, 'pl', `جارٍ الغسيل… ${fmt(launderAcc)} صارت نظيفة`); ui.progFill.style.width = Math.min(100, (launderAcc % 10000) / 100) + '%'; }
   if (toastT > 0) { toastT -= dt; if (toastT <= 0) ui.toast.classList.remove('show'); }
 }
 
@@ -1074,6 +1203,8 @@ function drawMinimap() {
     icon(st.x, st.z, st.cooldown > 0 ? '#555' : hex, (st.type === 'bank' ? 9 : 7) * MMD, '$', st.cooldown <= 0 && st.type !== 'shop');
   }
   icon(safe.x, safe.z, '#3dff7a', 8 * MMD, 'H', true);
+  icon(fence.x, fence.z, '#b26bff', 7 * MMD, 'F', goods > 0);
+  icon(laundry.x, laundry.z, '#3dd8ff', 7 * MMD, 'L', cash + dirty > 0);
   for (const car of cars) if (car.police) icon(car.pos.x, car.pos.y, car.chase ? ((time * 4 | 0) % 2 ? '#ff3030' : '#3060ff') : '#8fa8ff', 4.5 * MMD, '', false);
   for (const o of officers) icon(o.pos.x, o.pos.y, '#6f9bff', 3 * MMD, '', false);
   // اللاعب
@@ -1092,7 +1223,8 @@ function updateOnFoot(dt) {
   if (K('KeyS', 'ArrowDown')) { mx -= fx; mz -= fz; }
   if (K('KeyD', 'ArrowRight')) { mx += rx; mz += rz; }
   if (K('KeyA', 'ArrowLeft')) { mx -= rx; mz -= rz; }
-  const len = Math.hypot(mx, mz);
+  let len = Math.hypot(mx, mz);
+  if (player.surrender) { mx = mz = len = 0; }
   const sprint = K('ShiftLeft', 'ShiftRight') && len > 0 && player.stamina > 0.03;
   player.stamina = clamp(player.stamina + (sprint ? -dt / 7 : dt / 5), 0, 1);
   const spd = len > 0 ? (sprint ? 8.2 : 4.6) : 0;
@@ -1101,7 +1233,8 @@ function updateOnFoot(dt) {
   player.vel.x += (tx - player.vel.x) * k; player.vel.y += (tz - player.vel.y) * k;
   player.pos.x += player.vel.x * dt; player.pos.y += player.vel.y * dt;
   const sp = player.vel.length();
-  if (sp > 0.3) player.facing += wrapA(Math.atan2(player.vel.x, player.vel.y) - player.facing) * Math.min(1, dt * 12);
+  if (gun.drawn) player.facing += wrapA(cam.yaw - player.facing) * Math.min(1, dt * 20);
+  else if (sp > 0.3) player.facing += wrapA(Math.atan2(player.vel.x, player.vel.y) - player.facing) * Math.min(1, dt * 12);
 }
 function updateDriving() {
   const c = player.car;
@@ -1124,6 +1257,7 @@ function enterCar(c) {
   if (c.police) setWanted(W.level + 2, 'سرقت سيارة شرطة!');
   else if (c.ai === 'traffic' && policeSees()) setWanted(W.level + 1, 'الشرطة رأتك تسرق سيارة!');
   c.ai = 'player'; c.chase = false; player.car = c; robbing = null;
+  if (gun.drawn) holster();
   player.H.g.visible = false;
   c.mesh.add(headlight); headlight.position.set(0, 0.8, 2.3); headlight.intensity = 260;
   c.mesh.add(headTarget); headTarget.position.set(0, -1, 22);
@@ -1153,17 +1287,19 @@ function interactions(dt) {
       else if (keys.KeyE) {
         if (robbing !== near) {
           robbing = near; robProg = 0;
-          setWanted(near.def.heat, '🚨 انطلق جهاز الإنذار! الشرطة في الطريق');
+          if (player.masked) setWanted(near.def.heat, '🚨 انطلق جهاز الإنذار! الشرطة في الطريق');
+          else setWanted(near.def.heat + 1, '📷 الكاميرات صوّرت وجهك! البس القناع (X) في المرة القادمة');
         }
         robProg += dt / near.def.time;
         player.facing = -near.sx * Math.PI / 2;
         if (Math.floor(time * 2.5) !== Math.floor((time - dt) * 2.5)) sound.beep(1250, 0.1, 'square', 0.05);
         if (robProg >= 1) {
           const amt = Math.round(mr(near.def.value[0], near.def.value[1]) / 10) * 10;
-          cash += amt; near.cooldown = near.def.cd; robbing = null; robProg = 0;
+          if (near.def.goods) goods += amt; else cash += amt;
+          near.cooldown = near.def.cd; robbing = null; robProg = 0;
           setWanted(Math.min(5, Math.max(W.level, near.def.heat) + (near.def.heat >= 3 ? 1 : 0)));
           W.lastSeen = 0;
-          toast(`+${fmt(amt)}  اهرب إلى المخبأ!`, '#7dff9e'); sound.cash();
+          toast(near.def.goods ? `+ مجوهرات بقيمة ${fmt(amt)} — بعها عند المشتري (F)` : `+${fmt(amt)}  اهرب إلى المخبأ!`, '#7dff9e'); sound.cash();
         }
       } else {
         if (robbing) { toast('توقفت السرقة'); robbing = null; }
@@ -1171,21 +1307,50 @@ function interactions(dt) {
       }
     } else if (robbing) { toast('ابتعدت — فشلت السرقة'); robbing = null; }
     if (dSafe < 3.6) {
-      hint = cash > 0 ? `اضغط E لإخفاء ${fmt(cash)} في المخبأ` : 'المخبأ — أحضر المال المسروق هنا';
+      hint = cash > 0 ? `اضغط E لإخفاء ${fmt(cash)} في المخبأ (يبقى مالاً قذراً حتى تغسله)` : 'المخبأ — خبّئ المال المسروق هنا لتحميه من المصادرة';
       if (pressed.KeyE && cash > 0) {
         if (W.level > 0) toast('الشرطة تلاحقك! تخلّص منها أولاً', '#ff6b6b');
+        else { dirty += cash; toast(`تم إخفاء ${fmt(cash)} 💰 — اغسله في المغسلة (L)`, '#7dff9e'); cash = 0; save(); sound.cash(); }
+      }
+    }
+    const dFence = dist2(P, fence.x, fence.z), dLaund = dist2(P, laundry.x, laundry.z);
+    if (dFence < 3.6) {
+      const offer = Math.round(goods * fenceRate / 10) * 10;
+      hint = (goods > 0 ? `E بيع المجوهرات بـ ${fmt(offer)} (السعر اليوم ${Math.round(fenceRate * 100)}%)` : 'المشتري — يشتري المجوهرات المسروقة')
+        + (gun.owned ? '' : `   ·   B شراء مسدس ${fmt(PISTOL_PRICE)}`);
+      if ((pressed.KeyE && goods > 0) || (pressed.KeyB && !gun.owned)) {
+        if (W.level > 0) toast('المشتري لا يتعامل مع المطلوبين! اختفِ أولاً', '#ff6b6b');
+        else if (pressed.KeyE) { cash += offer; goods = 0; toast(`بعت المجوهرات بـ ${fmt(offer)} نقداً`, '#7dff9e'); sound.cash(); }
+        else if (cash + bank < PISTOL_PRICE) toast(`تحتاج ${fmt(PISTOL_PRICE)} لشراء المسدس`, '#ff6b6b');
         else {
-          bank += cash; toast(`تم إخفاء ${fmt(cash)} 💰`, '#7dff9e'); cash = 0; save(); sound.cash();
-          if (bank >= GOAL && !wonShown) { wonShown = true; setTimeout(() => setState('win'), 900); }
+          const fromCash = Math.min(cash, PISTOL_PRICE); cash -= fromCash; bank -= PISTOL_PRICE - fromCash; save();
+          gun.owned = true; gun.ammo = MAG; toast('اشتريت مسدساً 🔫 — Q لإشهاره، نقرة يسار للإطلاق', '#ffd36b'); sound.cash();
         }
       }
     }
+    if (dLaund < 3.6) {
+      const avail = cash + dirty;
+      hint = avail > 0 ? `اضغط مطولاً E لغسل ${fmt(avail)} (عمولة ${LAUNDER_FEE * 100}%) — المال النظيف وحده يُحتسب للهدف` : 'مغسلة النور — تغسل المال القذر مقابل عمولة';
+      if (keys.KeyE && avail > 0) {
+        if (W.level > 0) { if (pressed.KeyE) toast('لا يمكنك الغسيل وأنت مطلوب', '#ff6b6b'); }
+        else {
+          let amt = Math.min(avail, dt * 9000);
+          const fc = Math.min(cash, amt); cash -= fc; dirty -= amt - fc;
+          bank += amt * (1 - LAUNDER_FEE); launderAcc += amt * (1 - LAUNDER_FEE);
+          if (Math.floor(time * 3) !== Math.floor((time - dt) * 3)) sound.beep(660, 0.06, 'sine', 0.05);
+          if (cash + dirty < 1) { cash = 0; dirty = 0; toast(`تم غسيل المال! +${fmt(launderAcc)} نظيف`, '#7dff9e'); sound.cash(); launderAcc = 0; save(); }
+          if (bank >= GOAL && !wonShown) { wonShown = true; save(); setTimeout(() => setState('win'), 900); }
+        }
+      } else if (launderAcc > 0) { toast(`غسلت ${fmt(launderAcc)}`, '#7dff9e'); launderAcc = 0; save(); }
+    } else if (launderAcc > 0) { launderAcc = 0; save(); }
     const car = nearestCar(3.6);
     if (car && !hint) hint = car.police ? 'اضغط F لسرقة سيارة الشرطة (+2 نجمة)' : 'اضغط F لركوب السيارة';
     if (car && pressed.KeyF) enterCar(car);
   } else {
     if (near && nd < 7 && near.cooldown <= 0) hint = `انزل من السيارة (F) لسرقة ${near.def.name}`;
     if (dSafe < 7 && cash > 0) hint = 'انزل من السيارة (F) لإخفاء المال';
+    if (dist2(P, fence.x, fence.z) < 7 && goods > 0) hint = 'انزل من السيارة (F) لبيع المجوهرات';
+    if (dist2(P, laundry.x, laundry.z) < 7 && cash + dirty > 0) hint = 'انزل من السيارة (F) لغسل المال';
     if (pressed.KeyF) exitCar();
   }
   setText(ui.hint, 'hint', hint);
@@ -1193,7 +1358,12 @@ function interactions(dt) {
 
 function wantedUpdate(dt) {
   W.crimeCd -= dt;
-  if (W.level <= 0) return;
+  if (W.level <= 0) {
+    if (!player.car && W.crimeCd <= 0 && (player.masked || gun.drawn) && policeSees(28)) {
+      setWanted(1, player.masked ? 'الشرطة اشتبهت بقناعك! انزعه (X) لتختلط بالناس' : 'الشرطة رأتك تشهر سلاحاً!'); W.crimeCd = 3;
+    }
+    return;
+  }
   let seen = false;
   for (const c of cars) {
     if (!(c.police && c.ai === 'police' && c.chase)) continue;
@@ -1201,7 +1371,7 @@ function wantedUpdate(dt) {
     if (d < 18 || (d < 65 && segHit(c.pos.x, c.pos.y, player.pos.x, player.pos.y, 2) >= 1)) { seen = true; break; }
   }
   if (!seen) for (const o of officers) if (!o.ret && dist2(o.pos, player.pos.x, player.pos.y) < 35) { seen = true; break; }
-  if (seen || robbing) W.lastSeen = 0; else W.lastSeen += dt;
+  if (seen || robbing) W.lastSeen = 0; else W.lastSeen += dt * (player.masked ? 1 : 1.5);
   if (W.lastSeen > 5 + W.level * 2.5) {
     W.level--; W.lastSeen = 0;
     if (W.level === 0) {
@@ -1223,7 +1393,8 @@ function arrestUpdate(dt) {
   if (W.level > 0) {
     const P = player.pos;
     if (!player.car) {
-      for (const o of officers) if (!o.ret && dist2(o.pos, P.x, P.y) < 1.8) rate += 0.75;
+      for (const o of officers) if (!o.ret && dist2(o.pos, P.x, P.y) < (player.surrender ? 3 : 1.8)) rate += player.surrender ? 1.5 : 0.75;
+      if (player.surrender) for (const c of cars) if (c.ai === 'police' && c.chase && dist2(c.pos, P.x, P.y) < 14) rate += 0.4;
       for (const c of cars) if (c.ai === 'police' && c.chase && dist2(c.pos, P.x, P.y) < 7 && Math.abs(c.speed) < 3) rate += 0.25;
     } else if (Math.abs(player.car.speed) < 3) {
       for (const c of cars) if (c.ai === 'police' && c.chase && dist2(c.pos, P.x, P.y) < 7) rate += 0.35;
@@ -1234,8 +1405,14 @@ function arrestUpdate(dt) {
   if (arrest >= 1) bust();
 }
 function bust() {
-  $('bustText').textContent = cash > 0 ? `صادرت الشرطة ${fmt(cash)} كانت بحوزتك. مالك في المخبأ بأمان.` : 'لم يكن معك مال هذه المرة. مالك في المخبأ بأمان.';
-  cash = 0; arrest = 0; robbing = null;
+  const keep = player.surrender ? Math.round(cash * 0.5 / 10) * 10 : 0;
+  const lost = [];
+  if (cash - keep > 0) lost.push(`${fmt(cash - keep)} نقداً`);
+  if (goods > 0) lost.push(`مجوهرات بقيمة ${fmt(goods)}`);
+  if (gun.owned) lost.push('مسدسك');
+  $('bustText').textContent = (bustReason ? bustReason + ' ' : '') + (player.surrender ? 'استسلمت فخفّفوا عنك: احتفظت بنصف نقودك. ' : '')
+    + (lost.length ? `صادرت الشرطة: ${lost.join('، ')}.` : 'لم يكن معك شيء هذه المرة.') + ' ما في المخبأ بأمان.';
+  cash = keep; goods = 0; gun.owned = false; arrest = 0; robbing = null; bustReason = '';
   sound.beep(220, 0.5, 'sawtooth', 0.12); sound.beep(165, 0.7, 'sawtooth', 0.12, 0.3);
   setState('busted');
 }
@@ -1248,6 +1425,45 @@ function respawn() {
   player.pos.set(safe.x, safe.z); player.vel.set(0, 0);
   player.facing = safe.sx * Math.PI / 2; cam.yaw = player.facing;
   player.H.g.visible = true;
+  player.hp = 100; player.surrender = false; holster(); setMask(false);
+  for (const b of bodies.splice(0)) scene.remove(b.H.g);
+}
+// وضعيات الذراعين فوق الحركة: رفع اليدين عند الاستسلام، ومدّ اليد اليمنى عند التصويب
+const ARM = {};
+player.H.g.traverse((b) => { if (b.isBone && /^UpperArm\.?[LR]$/.test(b.name)) ARM[b.name.slice(-1)] = b; });
+const qTmp = new THREE.Quaternion(), qW = new THREE.Quaternion(), vAxis = new THREE.Vector3();
+function aimBone(b, worldDir, k = 1) { // يدير العظمة حتى يشير محورها Y نحو اتجاه عالمي
+  if (!b) return;
+  b.parent.getWorldQuaternion(qW);
+  const cur = new THREE.Vector3(0, 1, 0).applyQuaternion(b.getWorldQuaternion(qTmp)).normalize();
+  const want = worldDir.clone().normalize();
+  const delta = new THREE.Quaternion().setFromUnitVectors(cur, want);
+  const target = delta.multiply(qTmp);           // الدوران العالمي المطلوب
+  const local = qW.clone().invert().multiply(target);
+  b.quaternion.slerp(local, k);
+}
+function poseArms() {
+  if (player.surrender) { player.H.g.updateMatrixWorld(true); aimBone(ARM.L, vAxis.set(-0.25, 1, 0)); aimBone(ARM.R, vAxis.set(0.25, 1, 0)); }
+  else if (gun.drawn) {
+    player.H.g.updateMatrixWorld(true);
+    const d = new THREE.Vector3(); camera.getWorldDirection(d);
+    aimBone(ARM.R, d);
+  }
+}
+function holster() { gun.drawn = false; if (player.H.gun) player.H.gun.visible = false; }
+function setMask(on) { player.masked = on; if (player.H.mask) player.H.mask.visible = on; }
+function gearKeys() {
+  if (player.car) return;
+  if (pressed.KeyX && !player.surrender) { setMask(!player.masked); toast(player.masked ? '🎭 لبست القناع — لن تتعرف عليك الكاميرات' : 'نزعت القناع'); }
+  if (pressed.KeyQ && !player.surrender) {
+    if (!gun.owned) toast(`لا تملك سلاحاً — اشترِه من المشتري (F) بـ ${fmt(PISTOL_PRICE)}`, '#ffb36b');
+    else { gun.drawn = !gun.drawn; if (player.H.gun) player.H.gun.visible = gun.drawn; cam.lastMouse = time; }
+  }
+  if (pressed.KeyZ) {
+    if (player.surrender) { player.surrender = false; toast('تراجعت عن الاستسلام'); }
+    else if (W.level > 0) { player.surrender = true; holster(); robbing = null; toast('🙌 استسلمت — ستحتفظ بنصف نقودك', '#ffd36b'); }
+    else toast('لا أحد يلاحقك لتستسلم');
+  }
 }
 
 // ------------------------------------------------------------------ الكاميرا والأضواء
@@ -1259,6 +1475,19 @@ function updateCamera(dt) {
   }
   const c = player.car;
   const tx = player.pos.x, tz = player.pos.y, ty = c ? 1.5 : 1.65;
+  if (!c && gun.drawn) { // تصويب من فوق الكتف: مركز الشاشة = اتجاه الرصاصة
+    const fx = Math.sin(cam.yaw), fz = Math.cos(cam.yaw), ap = cam.pitch * 0.9 - 0.18;
+    const dir = new THREE.Vector3(fx * Math.cos(ap), -Math.sin(ap), fz * Math.cos(ap));
+    const bx = tx - fz * 0.7, bz = tz + fx * 0.7;
+    let ox = -dir.x * 2.6, oz = -dir.z * 2.6;
+    const t = segHit(tx, tz, bx + ox, bz + oz, 2.5, 0.35);
+    if (t < 1) { const k = Math.max(0.1, t - 0.05); ox *= k; oz *= k; }
+    const want = new THREE.Vector3(bx + ox, Math.max(0.6, 1.75 - dir.y * 2.6), bz + oz);
+    camera.position.lerp(want, 1 - Math.exp(-dt * 22));
+    camera.lookAt(camera.position.clone().addScaledVector(dir, 40));
+    if (Math.abs(camera.fov - 50) > 0.05) { camera.fov += (50 - camera.fov) * Math.min(1, dt * 8); camera.updateProjectionMatrix(); }
+    return;
+  }
   const dist = c ? 9.5 + Math.abs(c.speed) * 0.07 : 5.2;
   if (c && time - cam.lastMouse > 1.0) {
     cam.yaw += wrapA(c.h - cam.yaw) * Math.min(1, dt * 2.6);
@@ -1309,6 +1538,9 @@ function worldUpdate(dt) {
   for (const c of cars) { const imp = c.collideWorld(); if (c === player.car && imp > 6) crashFx(imp); }
   updateOfficers(dt);
   for (const c of cars) c.sync(dt);
+  for (let i = tracers.length - 1; i >= 0; i--) { const t = tracers[i]; if ((t.t -= dt) <= 0) { scene.remove(t.l); t.l.geometry.dispose(); tracers.splice(i, 1); } }
+  for (let i = bodies.length - 1; i >= 0; i--) if ((bodies[i].t -= dt) <= 0) { scene.remove(bodies[i].H.g); bodies.splice(i, 1); }
+  muzzle.intensity = Math.max(0, muzzle.intensity - dt * 900);
   policeManager(dt);
   for (const s of stores) s.cooldown = Math.max(0, s.cooldown - dt);
 }
@@ -1325,12 +1557,20 @@ function update(dt) {
     player.H.g.position.set(player.pos.x, 0, player.pos.y);
     player.H.g.rotation.y = player.facing;
     animHuman(player.H, player.vel.length(), dt, !!robbing);
-    player.H.bag.visible = cash > 0;
-    const bs = 0.7 + Math.min(cash / 60000, 1) * 0.8; player.H.bag.scale.set(bs, bs, bs);
+    player.H.bag.visible = cash + goods > 0;
+    const bs = 0.7 + Math.min((cash + goods) / 60000, 1) * 0.8; player.H.bag.scale.set(bs, bs, bs);
+    poseArms();
   }
   interactions(dt);
+  gearKeys();
   wantedUpdate(dt);
   arrestUpdate(dt);
+  // السلاح والصحة وسعر المشتري
+  gun.cd -= dt;
+  if (gun.reloadT > 0 && (gun.reloadT -= dt) <= 0) { gun.ammo = MAG; sound.beep(900, 0.05, 'square', 0.05); }
+  player.regenT += dt;
+  if (player.regenT > 5) player.hp = Math.min(100, player.hp + dt * 6);
+  if ((fenceT -= dt) <= 0) { fenceT = 45; fenceRate = Math.round(mr(0.55, 1.0) * 100) / 100; }
 }
 
 function setState(s) {
@@ -1377,4 +1617,4 @@ $('loading').remove();
 loop();
 
 // واجهة صغيرة للاختبار والتطوير من الطرفية
-window.__damar = { step(n, dt = 0.05) { for (let i = 0; i < n && state === 'play'; i++) { time += dt; update(dt); for (const k in pressed) delete pressed[k]; } }, get cash() { return cash; }, get bank() { return bank; }, get arrest() { return arrest; }, officers, player, cars, stores, safe, W, get state() { return state; }, setState, keys, pressed, cam, setWanted };
+window.__damar = { step(n, dt = 0.05) { for (let i = 0; i < n && state === 'play'; i++) { time += dt; update(dt); for (const k in pressed) delete pressed[k]; } }, get cash() { return cash; }, get bank() { return bank; }, get arrest() { return arrest; }, get goods() { return goods; }, get dirty() { return dirty; }, set cash(v) { cash = v; }, set goods(v) { goods = v; }, gun, fence, laundry, shoot, bodies, get fenceRate() { return fenceRate; }, officers, player, cars, stores, safe, W, get state() { return state; }, setState, keys, pressed, cam, setWanted };
