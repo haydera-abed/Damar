@@ -284,11 +284,11 @@ func _build_menus() -> void:
 	_settings_btns["time"] = _button("", p, func(): game.advance_time())
 	_settings_btns["cycle"] = _button("", p, func(): game.toggle_day_cycle())
 	for k in _settings_btns:
-		var b: Button = _settings_btns[k]
-		b.add_theme_font_size_override("font_size", 18)
+		var sb: Button = _settings_btns[k]
+		sb.add_theme_font_size_override("font_size", 18)
 		var st := _style(Color(0.15, 0.17, 0.24), 10, Color(1, 1, 1, 0.15))
-		b.add_theme_stylebox_override("normal", st)
-		b.custom_minimum_size = Vector2(380, 0)
+		sb.add_theme_stylebox_override("normal", st)
+		sb.custom_minimum_size = Vector2(380, 0)
 	_centered(_label("اختصارات: F2 الجودة · R الطقس · T الوقت", 13, Color(1, 1, 1, 0.5), p))
 	_button("متابعة", p, func(): continue_pressed.emit())
 
