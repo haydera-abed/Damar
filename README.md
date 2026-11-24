@@ -74,3 +74,7 @@ assets/textures  خرائط النتوءات للأسطح
 - الشخصيات والأشجار: [Quaternius](https://quaternius.com)
 - خرائط النتوءات: [pmndrs/assets](https://github.com/pmndrs/assets)
 - النماذج أُخذت بنسخها المضغوطة من حزمة npm `@netforge/asset-library-files` (التفاصيل في `assets/models/NOTICE-netforge.txt`)
+
+## نسخة Unity
+
+لمستوى رسومي يقترب من ألعاب ستيم، يوجد كود كامل لمحرك Unity مع دليل إعداد خطوة بخطوة في [`unity/README.md`](unity/README.md).
