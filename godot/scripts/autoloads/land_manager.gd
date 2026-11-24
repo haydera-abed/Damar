@@ -20,7 +20,8 @@ const EQUIPMENT := {
 	"safe": {"name": "خزنة", "price": 40000},
 }
 
-var researched := {}                     # "1"/"2"/"3" -> true
+var researched := {}                     # "plot1".."plot3" و"settle1".."settle3" -> true
+var world_data := {}                     # بيانات العالم ثلاثي الأبعاد الإضافية (المنزل، الأمان…) — تُمسح مع الولاية
 var home_settlement := ""
 var home_plot := ""
 
@@ -72,7 +73,7 @@ func can_use_laptop_item(item_id: String) -> bool:
 
 # ---------------------------------------------------------------- اللابتوب: البحث والشراء
 func research_title(level: int) -> bool:
-	if researched.get(str(level), false):
+	if researched.get("plot%d" % level, false):
 		land_error.emit("سبق البحث عن هذا السند")
 		return false
 	if level > laptop_tier() + 1:
@@ -83,14 +84,14 @@ func research_title(level: int) -> bool:
 		return false
 	if not EconomyManager.spend(Balance.TITLE_RESEARCH[level]):
 		return false
-	researched[str(level)] = true
+	researched["plot%d" % level] = true
 	title_researched.emit(level)
 	GameState.save_state()
 	return true
 
 
 func buy_title(level: int) -> bool:
-	if not researched.get(str(level), false):
+	if not researched.get("plot%d" % level, false):
 		land_error.emit("ابحث عن السند أولاً من اللابتوب التجاري")
 		return false
 	if not EconomyManager.spend(Balance.TITLE_PRICE[level]):
@@ -221,16 +222,18 @@ func _home_plot_data() -> LandPlotData:
 # ---------------------------------------------------------------- وحدة الولاية
 func reset_state() -> void:
 	researched = {}
+	world_data = {}
 	home_settlement = ""
 	home_plot = ""
 	laptop_tier_changed.emit(laptop_tier())
 
 
 func to_state_dict() -> Dictionary:
-	return {"researched": researched, "settlement": home_settlement, "plot": home_plot}
+	return {"researched": researched, "settlement": home_settlement, "plot": home_plot, "world": world_data}
 
 
 func from_state_dict(d: Dictionary) -> void:
 	researched = d.get("researched", {})
+	world_data = d.get("world", {})
 	home_settlement = d.get("settlement", "")
 	home_plot = d.get("plot", "")

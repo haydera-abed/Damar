@@ -21,7 +21,7 @@ func _ready() -> void:
 				if x.has_owner() and x.level == 1 and s == null:
 					s = x
 		EconomyManager.add_dirty(500000)
-		LandManager.researched["1"] = true
+		LandManager.researched["plot1"] = true
 		LandManager.buy_title(1)
 		GameState.add_item("document", 3)
 		LandManager.rent_plot(s.id, s.vacant_plots()[0].id)

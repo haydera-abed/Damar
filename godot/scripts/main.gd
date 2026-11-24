@@ -169,6 +169,9 @@ func _ready() -> void:
 		no_save = true
 		GameState.persistence = false
 		_envshots()
+	elif _arg(args, "--landpersist") != "":
+		no_save = true                        # حفظ اللعبة القديم معطّل؛ نختبر حفظ طبقة المنطق فقط (ملفات اختبار)
+		_land_persist(_arg(args, "--landpersist"))
 	elif "--landshots" in OS.get_cmdline_user_args():
 		no_save = true
 		GameState.persistence = false
@@ -457,7 +460,8 @@ func remove_car(c: Car) -> void:
 
 func save_game() -> void:
 	if no_save:
-		return                       # أوضاع الاختبار والتصوير لا تلمس حفظ اللاعب
+		return
+	GameState.save_state()                   # يدفع حالة الأراضي ويحفظ طبقة المنطق                       # أوضاع الاختبار والتصوير لا تلمس حفظ اللاعب
 	_save()
 
 
@@ -818,6 +822,7 @@ func _bridge_core() -> void:
 		GameState.bridged = true             # من الآن المال والمخزون يُحفظان في core_state.json
 		GameState.save_state()
 	core_owned = true
+	land.attach_core()                       # الأراضي: الولاية تُبنى من مستوطنات هذا العالم
 	GameState.raids_enabled = gangs.season_mode
 	TravelManager.home_check = func() -> bool: return land.home.x >= 0
 	PrisonManager.extra_wealth = func() -> int: return crime.bag_value() + gangs.stash_value() + land.house.cargo.size() * House.CRATE_SELL
@@ -1555,6 +1560,11 @@ func _land_test(out: String) -> void:
 	Input.action_release("interact")
 	await _frames(5)
 	print("AUTOTEST rent: home=%s house=%s tax=%.2f base=%s" % [land.home, sp.house != null, land.tenant_tax(), land.base_title()])
+	land.push_core()
+	var hs_res: SettlementData = GameState.state.locate_settlement(LandManager.home_settlement)[1] if LandManager.has_home() else null
+	print("AUTOTEST core-land: world_state=%s districts=%d has_home=%s laptop=%s owner=%s tenant=%s vacant_rentable=%d title_inv=%d" % [
+		land.is_world_state(GameState.state), GameState.state.districts.size(), LandManager.has_home(), LandManager.tier_roman(LandManager.laptop_tier()),
+		hs_res.owner_id if hs_res else "-", hs_res.find_plot(LandManager.home_plot).tenant_id if hs_res else "-", LandManager.vacant_rentable().size(), GameState.item_count("title_plot_1")])
 	# الدخول إلى المنزل مشياً عبر الباب
 	var door_w: Vector3 = sp.house.transform * Vector3(sp.size.x / 2.0 + 2.5, 0.3, 0)
 	var in_yaw := atan2(-sp.face.x, -sp.face.z)
@@ -1743,12 +1753,42 @@ func cars_for_district(d: String) -> String:
 	return heist.cars.keys()[0]
 
 
+## حفظ الأراضي عبر طبقة المنطق في تشغيلين: godot --path godot -- --core-persist-test --landpersist=1 ثم =2
+func _land_persist(phase: String) -> void:
+	await _frames(5)
+	if phase == "1":
+		var si := -1
+		for i in land.settlements.size():
+			if land.settlements[i].owner > 0 and land.settlements[i].level == 1:
+				si = i
+				break
+		if si < 0:
+			si = 1
+			land.settlements[si].owner = 1
+		land.plot_titles[1] = 1
+		land._rent(si, 2)
+		land.house.tier = 2
+		land.house.slots = ["cabinet", "rack"]
+		land.docs = 5
+		land.researched["plot2"] = true
+		GameState.save_state()
+		print("LANDPERSIST phase1 home=%s core_home=%s" % [land.home, LandManager.home_plot])
+	else:
+		print("LANDPERSIST phase2 home=%s tier=%d slots=%s docs=%d research=%s house_built=%s core_home=%s -> %s" % [land.home, land.house.tier, land.house.slots, land.docs, land.researched.keys(),
+			land.home.x >= 0 and land.settlements[land.home.x].plots[land.home.y].house != null, LandManager.home_plot,
+			"pass" if land.home.x >= 0 and land.house.tier == 2 and land.docs == 5 and LandManager.has_home() and land.researched.has("plot2") else "fail"])
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(GameState.state_path))
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(GameState.profile_path))
+	get_tree().quit()
+
+
 ## اختبار ربط اللعبة بطبقة المنطق (Autoloads)
 func _core_bridge_test() -> void:
 	await _frames(3)
 	# المداهمة في اختبار الأراضي مرّت عبر PrisonManager
 	print("AUTOTEST prison: in_prison=%s years=%d authority=%d menu=%s state=%s" % [GameState.in_prison, int(GameState.profile.jail_years), PrisonManager.authority_level(), state, GameState.state])
 	_escape_to("sahel")
+	print("AUTOTEST escape-world: world_state=%s settlements=%d home=%s" % [land.is_world_state(GameState.state), GameState.state.all_settlements().size(), LandManager.has_home()])
 	print("AUTOTEST escape: state=%s in_prison=%s cash=%d bank=%d tools=%s" % [GameState.state.id if GameState.state else "-", GameState.in_prison, cash, bank, crime.tools])
 	# المال: الخاصية في main تمرّر إلى EconomyManager
 	bank = 12345

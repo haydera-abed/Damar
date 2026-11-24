@@ -48,7 +48,12 @@ var safe := false                # (قديم) الخزنة صارت أثاثاً
 var house: House
 var _bushes_spawned := false
 var pickups: Array = []          # شتلات في الحدائق وشحنات سقطت على الأرض: {pos, node, kind, item, t}
-var researched := {}             # "plot1"، "settle2"… → true
+## الأبحاث تعيش في LandManager (طبقة المنطق)
+var researched: Dictionary:
+	get:
+		return LandManager.researched
+	set(v):
+		LandManager.researched = v
 var motel_cash: int:
 	get:
 		return MotelManager.stash_cash
@@ -1063,7 +1068,8 @@ func to_dict() -> Dictionary:
 func from_dict(d: Dictionary) -> void:
 	if not game.core_owned:
 		docs = d.get("docs", 0)
-	researched = d.get("researched", {})
+	if d.has("researched"):                 # حفظ قديم فقط؛ الأبحاث الآن في LandManager
+		researched = d.researched
 	if not game.core_owned:
 		motel_cash = d.get("motel", 0)
 	eviction_rights = d.get("evict", 0)
@@ -1092,6 +1098,136 @@ func from_dict(d: Dictionary) -> void:
 			if t != s.plots[k].tenant:
 				_set_tenant(s, k, t)
 		_refresh(s)
+
+
+# ---------------------------------------------------------------- التوحيد مع طبقة المنطق (LandManager / SettlementData)
+## الولاية في GameState تُبنى من مستوطنات هذا العالم: 9 مقاطعات بمستوياتها + «الصحراء» (الموتيل) = 10.
+## مصدر الحقيقة المحفوظ صار core_state.json (يُمسح مع الولاية في السجن الفيدرالي):
+##   - الهيكل (مالك كل مستوطنة، ساكن كل قطعة، ضريبة غير مجموعة، المعدات) ← SettlementData / LandPlotData
+##   - منزلك والأبحاث ← LandManager.home_* و researched؛ السندات ← مخزون GameState
+##   - بقية تفاصيل العالم (المنزل، الأمان…) ← LandManager.world_data
+func settlement_id(si: int) -> String:
+	return "w_s%d" % si
+
+
+func plot_id(si: int, k: int) -> String:
+	return "w_s%d_p%d" % [si, k]
+
+
+func is_world_state(st: StateData) -> bool:
+	return st != null and not st.districts.is_empty() and st.districts[0].id.begins_with("w_d")
+
+
+func build_world_state(state_id: String) -> StateData:
+	var st := StateData.new()
+	st.id = state_id
+	st.display_name = StateFactory.STATE_NAMES.get(state_id, state_id)
+	st.started_at_unix = int(Time.get_unix_time_from_system())
+	for d in 9:
+		var dd := DistrictData.new()
+		dd.id = "w_d%d" % d
+		dd.display_name = Gangs.DISTRICTS[d]
+		dd.level = Gangs.LEVEL[d]
+		dd.clan_owner = Gangs.GANGS[game.gangs.owner_of[d]].name if game.gangs.owner_of.size() > d else ""
+		for si in settlements.size():
+			if settlements[si].district == d:
+				dd.settlements.append(_settlement_res(si))
+		st.districts.append(dd)
+	var desert := DistrictData.new()
+	desert.id = "w_d9"
+	desert.display_name = "الصحراء (الموتيل)"
+	desert.level = 1
+	st.districts.append(desert)
+	return st
+
+
+func _settlement_res(si: int) -> SettlementData:
+	var s: Dictionary = settlements[si]
+	var r := SettlementData.new()
+	r.id = settlement_id(si)
+	r.display_name = s.name
+	r.level = s.level
+	r.tax_rate = TENANT_TAX[s.level]
+	for k in PLOTS:
+		var p := LandPlotData.new()
+		p.id = plot_id(si, k)
+		r.plots.append(p)
+	_mirror_settlement(si, r)
+	return r
+
+
+func _mirror_settlement(si: int, r: SettlementData) -> void:
+	var s: Dictionary = settlements[si]
+	if s.owner == 0:
+		r.owner_type = SettlementData.OwnerType.PLAYER
+		r.owner_id = GameState.player_id if s.owner_name == "" else s.owner_name
+	elif s.owner > 0:
+		r.owner_type = SettlementData.OwnerType.CLAN
+		r.owner_id = Gangs.GANGS[s.owner].name
+	else:
+		r.owner_type = SettlementData.OwnerType.NONE
+		r.owner_id = ""
+	r.uncollected_tax = int(s.tax_box)
+	for k in PLOTS:
+		var p: LandPlotData = r.plots[k]
+		var t: String = s.plots[k].tenant
+		p.tenant_id = GameState.player_id if (t == "أنت" or Vector2i(si, k) == home) and k > 0 else t
+		if k == 0 and s.owner == 0 and s.owner_name == "":
+			p.tenant_id = GameState.player_id
+		p.equipment.clear()
+		if Vector2i(si, k) == home:
+			p.equipment.append("laundering_desk")
+			for e in house.slots:
+				p.equipment.append(e)
+			if house.annex != "":
+				p.equipment.append("annex_" + house.annex)
+
+
+## يدفع حالة العالم إلى طبقة المنطق (قبل كل حفظ)
+func push_core() -> void:
+	if game.net.is_online() or GameState.state == null or not is_world_state(GameState.state):
+		return
+	for si in settlements.size():
+		var loc := GameState.state.locate_settlement(settlement_id(si))
+		if not loc.is_empty():
+			_mirror_settlement(si, loc[1])
+	LandManager.home_settlement = settlement_id(home.x) if home.x >= 0 else ""
+	LandManager.home_plot = plot_id(home.x, home.y) if home.x >= 0 else ""
+	for lvl in [1, 2, 3]:
+		for pair in [["title_plot_%d" % lvl, int(plot_titles[lvl])], ["title_settle_%d" % lvl, int(settle_titles[lvl])]]:
+			if pair[1] > 0:
+				GameState.inventory[pair[0]] = pair[1]
+			else:
+				GameState.inventory.erase(pair[0])
+	var wd := to_dict()
+	wd.erase("researched")
+	LandManager.world_data = wd
+
+
+## يقرأ حالة العالم من طبقة المنطق (عند التحميل)
+func pull_core() -> void:
+	if LandManager.world_data.is_empty():
+		return
+	from_dict(LandManager.world_data)
+	for lvl in [1, 2, 3]:
+		plot_titles[lvl] = GameState.item_count("title_plot_%d" % lvl)
+		settle_titles[lvl] = GameState.item_count("title_settle_%d" % lvl)
+
+
+## يُستدعى مرة عند بدء اللعبة: يبني ولاية العالم إن لم تكن موجودة، أو يستعيدها
+func attach_core() -> void:
+	GameState.state_builder = build_world_state
+	GameState.saving.connect(push_core)
+	if is_world_state(GameState.state):
+		pull_core()
+	else:
+		var sid: String = GameState.state.id if GameState.state else GameState.DEFAULT_STATE
+		var started: int = GameState.state.started_at_unix if GameState.state else int(Time.get_unix_time_from_system())
+		GameState.state = build_world_state(sid)
+		GameState.state.started_at_unix = started
+		push_core()
+		GameState.save_state()
+	LandManager.laptop_tier_changed.emit(LandManager.laptop_tier())
 
 
 # ---------------------------------------------------------------- اللعب الجماعي (الخادم يحدد الملكية)

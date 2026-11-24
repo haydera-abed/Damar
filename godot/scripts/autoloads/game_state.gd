@@ -13,6 +13,7 @@ signal inventory_changed(item_id: String, count: int)
 signal wanted_changed(level: int)
 signal profile_changed(profile: Dictionary)
 signal federal_raid_due
+signal saving                          # قبل الكتابة: لتدفع الأنظمة الخارجية (العالم ثلاثي الأبعاد) حالتها
 
 const STATE_PATH := "user://core_state.json"
 const PROFILE_PATH := "user://core_profile.json"
@@ -28,6 +29,7 @@ var persistence := true                # الاختبارات واللعب ال�
 var bridged := false                   # اللعبة ثلاثية الأبعاد نقلت حفظها القديم إلى هنا (يُكتب مرة واحدة)
 var loaded_from_disk := false
 var raids_enabled := true              # المداهمة الأسبوعية (تتبع إعداد اللعبة)
+var state_builder: Callable = Callable()   # اللعبة ثلاثية الأبعاد تبني الولاية من عالمها؛ الافتراضي StateFactory
 var state_path := STATE_PATH
 var profile_path := PROFILE_PATH
 
@@ -71,7 +73,7 @@ func register_module(module_name: String, obj: Object) -> void:
 
 # ---------------------------------------------------------------- الولاية
 func start_state(state_id: String, seed := 0) -> void:
-	state = StateFactory.create(state_id, seed)
+	state = state_builder.call(state_id) if state_builder.is_valid() else StateFactory.create(state_id, seed)
 	inventory = {}
 	wanted = 0
 	in_prison = false
@@ -141,6 +143,7 @@ func has_items(req: Dictionary) -> bool:
 func save_state() -> void:
 	if not persistence or state == null:
 		return
+	saving.emit()
 	var mods := {}
 	for k in _modules:
 		mods[k] = _modules[k].to_state_dict()
