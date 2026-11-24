@@ -11,6 +11,12 @@ var stamina := 1.0
 var facing := 0.0
 var robbing := false
 var car: Car = null
+var health := 100.0
+var max_health := 100.0
+var downed := false
+var surrendered := false
+var dead := false               # للتوافق مع أهداف الأسلحة
+var _regen_t := 0.0
 var gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 
 
@@ -38,8 +44,12 @@ func _physics_process(dt: float) -> void:
 	var r := Vector3(-cos(yaw), 0, sin(yaw))
 	var iv := Input.get_vector("move_left", "move_right", "move_back", "move_forward")
 	var move := (f * iv.y + r * iv.x).limit_length(1.0)
-	if robbing:
+	if robbing or downed or surrendered:
 		move = Vector3.ZERO
+	# تجدد الصحة ببطء بعد 6 ثوانٍ بلا إصابة
+	_regen_t += dt
+	if _regen_t > 6.0 and not downed:
+		health = minf(max_health, health + dt * 4.0)
 	var sprint := Input.is_action_pressed("sprint") and move.length() > 0.1 and stamina > 0.03
 	stamina = clampf(stamina + (-dt / 7.0 if sprint else dt / 5.0), 0.0, 1.0)
 	var target := move * (SPRINT if sprint else WALK)
@@ -49,14 +59,44 @@ func _physics_process(dt: float) -> void:
 	velocity.y = -1.0 if is_on_floor() else velocity.y - gravity * dt
 	move_and_slide()
 	var hs := Vector2(velocity.x, velocity.z).length()
-	if hs > 0.3:
+	if game.weapons.aiming:
+		facing = lerp_angle(facing, yaw, minf(1.0, dt * 20.0))   # يواجه اتجاه التصويب
+	elif hs > 0.3:
 		facing = lerp_angle(facing, atan2(velocity.x, velocity.z), minf(1.0, dt * 12.0))
 	human.rotation.y = facing
-	human.animate(hs, robbing)
+	if not downed:
+		human.animate(hs, robbing)
 	if human.bag:
-		human.bag.visible = game.cash > 0
-		var bs := 0.7 + minf(game.cash / 60000.0, 1.0) * 0.8
+		var bv: int = game.crime.bag_value()
+		human.bag.visible = bv > 0 or game.crime.bag.size() > 0
+		var bs := 0.7 + minf(bv / 60000.0, 1.0) * 0.8
 		human.bag.scale = Vector3.ONE * bs
+
+
+func take_damage(dmg: float, _from: Node) -> void:
+	if downed or car != null:
+		return
+	health -= dmg
+	_regen_t = 0.0
+	game.on_player_hit(dmg)
+	if health <= 0.0:
+		health = 0.0
+		downed = true
+		human.play_once("death")
+		game.on_player_downed()
+
+
+func set_surrender(on: bool) -> void:
+	surrendered = on
+	human.set_hands_up(on)
+
+
+func revive() -> void:
+	downed = false
+	surrendered = false
+	health = max_health
+	human.set_hands_up(false)
+	human.play("idle")
 
 
 func teleport(p: Vector3, yaw: float) -> void:

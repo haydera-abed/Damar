@@ -28,6 +28,17 @@ var minimap: Minimap
 var menus := {}
 var bust_text: Label
 var _toast_t := 0.0
+var info_l: Label
+var launder_l: Label
+var health_bar: ProgressBar
+var crosshair: Label
+var dmg_flash: ColorRect
+var jail_l: Label
+var bribe_btns: Array[Button] = []
+var release_btn: Button
+var menu_title: Label
+var menu_sub: Label
+var menu_list: VBoxContainer
 var _settings_btns := {}
 
 
@@ -109,7 +120,7 @@ func _build_hud() -> void:
 	money.add_theme_stylebox_override("panel", _style(Color(0.03, 0.04, 0.07, 0.65)))
 	var mv := VBoxContainer.new()
 	money.add_child(mv)
-	for pair in [["معك", "cash"], ["في المخبأ", "bank"]]:
+	for pair in [["نقود قذرة", "cash"], ["الحساب البنكي", "bank"]]:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 28)
 		var v := _label("$0", 20, Color("7dff9e"), row)
@@ -122,11 +133,34 @@ func _build_hud() -> void:
 		else:
 			bank_l = v
 		mv.add_child(row)
+	launder_l = _label("", 13, Color("9fe8ff"), mv)
+	launder_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	goal_bar = _bar(Color("39e27d"), 220, 8, mv)
 	_label("الهدف: " + Cfg.money(Cfg.GOAL), 13, Color(1, 1, 1, 0.6), mv).horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	goal_bar.fill_mode = ProgressBar.FILL_END_TO_BEGIN
 	hud.add_child(money)
 	_place(money, Control.PRESET_TOP_RIGHT, Vector2(-16, 16))
+
+	# معلومات اللص (تحت المال)
+	var ip := PanelContainer.new()
+	ip.add_theme_stylebox_override("panel", _style(Color(0.03, 0.04, 0.07, 0.6)))
+	var iv := VBoxContainer.new()
+	ip.add_child(iv)
+	info_l = _label("", 15, Color.WHITE, iv)
+	info_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	health_bar = _bar(Color("ff4b4b"), 220, 6, iv)
+	health_bar.fill_mode = ProgressBar.FILL_END_TO_BEGIN
+	hud.add_child(ip)
+	_place(ip, Control.PRESET_TOP_RIGHT, Vector2(-16, 170))
+	# علامة التصويب ووميض الإصابة
+	crosshair = _label("+", 34, Color(1, 1, 1, 0.9), hud)
+	crosshair.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_place(crosshair, Control.PRESET_CENTER, Vector2(0, -8))
+	dmg_flash = ColorRect.new()
+	dmg_flash.color = Color(0.8, 0.0, 0.0, 0.0)
+	dmg_flash.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dmg_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.add_child(dmg_flash)
 
 	# النجوم (أعلى اليسار)
 	var wbox := VBoxContainer.new()
@@ -263,18 +297,38 @@ func _build_menus() -> void:
 	grid.columns = 2
 	grid.add_theme_constant_override("h_separation", 40)
 	grid.layout_direction = Control.LAYOUT_DIRECTION_RTL
-	for line in ["W A S D  —  الحركة / القيادة", "الفأرة  —  تدوير الكاميرا", "Shift  —  الركض", "E (مطولاً)  —  السرقة / الإيداع", "F  —  ركوب / نزول السيارة", "Space  —  فرامل اليد", "H  —  البوق", "R  —  المطر    M  —  الصوت"]:
+	for line in ["W A S D  —  الحركة / القيادة", "الفأرة  —  الكاميرا", "زر أيمن / أيسر  —  تصويب / إطلاق", "Q  —  تبديل السلاح", "X  —  القناع", "Z  —  الاستسلام", "E (مطولاً)  —  سرقة / تفاعل", "F  —  ركوب / نزول", "Shift  —  ركض   Space  —  فرامل اليد", "F2 الجودة · R الطقس · T الوقت"]:
 		_label(line, 15, Color(1, 1, 1, 0.85), grid)
 	var gc := CenterContainer.new()
 	gc.add_child(grid)
 	m.add_child(gc)
-	_centered(_label("💡 الأزقة الضيقة بين المباني لا تدخلها سيارات الشرطة. اختفِ عن أنظارهم لتزول النجوم، ولا يمكنك الإيداع وأنت مطلوب.", 14, Color(1, 1, 1, 0.6), m))
+	_centered(_label("💡 الغنائم تُباع للمشتري ($) خارج المدينة وأنت ملثّم، ثم تُغسل في المخبأ (H) لتصبح آمنة في حسابك البنكي. الأدوات والأسلحة من السوق السوداء.", 14, Color(1, 1, 1, 0.6), m))
 	_button("ابدأ اللعب", m, func(): start_pressed.emit())
 
 	var b := _overlay("busted")
 	_centered(_label("تم القبض عليك!", 52, Color("ff4b4b"), b))
-	bust_text = _centered(_label("", 18, Color.WHITE, b))
-	_button("العودة إلى المخبأ", b, func(): continue_pressed.emit())
+	bust_text = _centered(_label("", 17, Color.WHITE, b))
+	jail_l = _centered(_label("", 22, Color("ffd36b"), b))
+	for amt in [10000, 50000, 200000]:
+		var bb := _button("رشوة الضابط %s" % Cfg.money(amt), b, func(): game.try_bribe(amt))
+		bb.add_theme_font_size_override("font_size", 17)
+		bb.add_theme_stylebox_override("normal", _style(Color(0.15, 0.17, 0.24), 10, Color(1, 1, 1, 0.15)))
+		bribe_btns.append(bb)
+	release_btn = _button("الخروج من السجن", b, func(): continue_pressed.emit())
+
+	# قائمة تفاعلية عامة (السوق، الغسيل، الشرطة…)
+	var u := _overlay("ui")
+	menu_title = _centered(_label("", 40, Color("ff9b3b"), u))
+	menu_sub = _centered(_label("", 15, Color(1, 1, 1, 0.75), u))
+	var sc := ScrollContainer.new()
+	sc.custom_minimum_size = Vector2(560, 360)
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	menu_list = VBoxContainer.new()
+	menu_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	menu_list.add_theme_constant_override("separation", 6)
+	sc.add_child(menu_list)
+	u.add_child(sc)
+	_button("إغلاق (Esc)", u, func(): game.close_menu())
 
 	var p := _overlay("paused")
 	_centered(_label("إيقاف مؤقت", 48, Color.WHITE, p))
@@ -283,6 +337,7 @@ func _build_menus() -> void:
 	_settings_btns["weather"] = _button("", p, func(): game.cycle_weather())
 	_settings_btns["time"] = _button("", p, func(): game.advance_time())
 	_settings_btns["cycle"] = _button("", p, func(): game.toggle_day_cycle())
+	_settings_btns["season"] = _button("", p, func(): game.toggle_season())
 	for k in _settings_btns:
 		var sb: Button = _settings_btns[k]
 		sb.add_theme_font_size_override("font_size", 18)
@@ -305,12 +360,13 @@ func refresh_settings() -> void:
 	_settings_btns["weather"].text = "الطقس: " + WorldEnv.WEATHER_NAMES[game.world.weather]
 	_settings_btns["time"].text = "الوقت: %s  (+3 ساعات)" % game.world.clock_text()
 	_settings_btns["cycle"].text = "دورة الليل والنهار: " + ("تعمل" if game.world.cycle_enabled else "متوقفة")
+	_settings_btns["season"].text = "المواسم (مداهمة فيدرالية كل 7 أيام): " + ("مفعّلة · اليوم %d" % (game.gangs.day_count + 1) if game.gangs.season_mode else "متوقفة")
 
 
 func show_state(s: String) -> void:
 	if s == "paused":
 		refresh_settings()
-	for k in ["menu", "busted", "paused", "win"]:
+	for k in ["menu", "busted", "paused", "win", "ui"]:
 		menus[k].visible = (k == s)
 	menus["hud"].visible = s != "menu"
 
@@ -327,10 +383,59 @@ func set_bust_text(t: String) -> void:
 	bust_text.text = t
 
 
+func update_jail(t: float, bank: int) -> void:
+	jail_l.text = "مدة السجن المتبقية: %d ثانية" % ceili(t) if t > 0.0 else "انتهت مدة سجنك"
+	for i in bribe_btns.size():
+		bribe_btns[i].visible = t > 0.0
+		bribe_btns[i].disabled = bank < [10000, 50000, 200000][i]
+	release_btn.disabled = t > 0.0
+	release_btn.text = "الخروج من السجن (مركز الشرطة)" if t <= 0.0 else "انتظر انتهاء المدة…"
+
+
+func open_menu(title: String, sub: String, items: Array) -> void:
+	menu_title.text = title
+	menu_sub.text = sub
+	for c in menu_list.get_children():
+		c.queue_free()
+	for it in items:
+		var b := Button.new()
+		b.text = it.text
+		b.disabled = not it.enabled
+		b.alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		b.add_theme_font_size_override("font_size", 16)
+		b.add_theme_stylebox_override("normal", _style(Color(0.13, 0.15, 0.22), 8, Color(1, 1, 1, 0.12)))
+		b.add_theme_stylebox_override("hover", _style(Color(0.22, 0.25, 0.35), 8, Color(1, 0.6, 0.3, 0.5)))
+		b.add_theme_stylebox_override("disabled", _style(Color(0.08, 0.08, 0.1), 8, Color(1, 1, 1, 0.05)))
+		b.pressed.connect(it.cb)
+		menu_list.add_child(b)
+	if game.state != "ui":
+		game.set_state("ui")
+
+
+func close_menu() -> void:
+	if menus.has("ui"):
+		menus["ui"].visible = false
+
+
+func flash_damage() -> void:
+	dmg_flash.color.a = 0.35
+
+
 # ---------------------------------------------------------------- التحديث
 func refresh(dt: float, hint: String) -> void:
 	cash_l.text = Cfg.money(game.cash)
 	bank_l.text = Cfg.money(game.bank)
+	var cr: Crime = game.crime
+	launder_l.text = ("🧼 قيد الغسيل: %s" % Cfg.money(int(cr.launder_pool))) if cr.launder_pool > 0 else ""
+	var w: Weapons = game.weapons
+	var wtxt := "بلا سلاح" if w.current == "" else "%s · %d طلقة" % [Weapons.CATALOG[w.current].name, w.ammo]
+	info_l.text = "%s   🎒 %d/%d (%s)\n⭐ السمعة %d (+%d%%)   🔫 %s\n🚩 أحياؤك %d/9%s" % ["🥷 ملثّم" if cr.masked else "👤 مكشوف", cr.bag.size(), Crime.BAG_SLOTS, Cfg.money(cr.bag_value()), cr.notoriety_level(), int(cr.fence_bonus() * 100), wtxt, game.gangs.owned_count(), "  👑 عرّاب المدينة" if game.gangs.is_godfather() else ""]
+	health_bar.value = game.player.health / game.player.max_health
+	if game.cop.on_duty:
+		info_l.text = "🚔 مناوبة — %s · اعتقالات %d · %s\n🔫 %s" % [game.cop.rank_name(), game.cop.shift_arrests, Cfg.money(game.cop.shift_pay), wtxt]
+	crosshair.visible = w.aiming
+	dmg_flash.color.a = maxf(0.0, dmg_flash.color.a - dt * 0.8)
 	goal_bar.value = minf(1.0, float(game.bank) / Cfg.GOAL)
 	var hiding: bool = game.wanted > 0 and game.last_seen > 0.8
 	var stars := ""
@@ -338,7 +443,7 @@ func refresh(dt: float, hint: String) -> void:
 		stars += "★" if i < game.wanted else "☆"
 	stars_l.text = stars
 	stars_l.modulate.a = 0.35 if hiding and fmod(game.time, 0.6) < 0.3 else 1.0
-	wanted_l.text = "" if game.wanted == 0 else ("اختفيت عن أنظارهم… ابقَ مختبئاً" if hiding else "الشرطة تراك! اهرب واختبئ")
+	wanted_l.text = "" if game.wanted == 0 else ("⚠ المطلوب الأول — موقعك مكشوف!" if game.most_wanted_t > 0.0 else ("اختفيت عن أنظارهم… ابقَ مختبئاً" if hiding else "الشرطة تراك! اهرب واختبئ"))
 	lose_bar.visible = hiding
 	lose_bar.value = game.last_seen / (5.0 + game.wanted * 2.5)
 	arrest_box.visible = game.arrest > 0.01
@@ -351,7 +456,7 @@ func refresh(dt: float, hint: String) -> void:
 	stam_bar.value = game.player.stamina
 	prog_box.visible = game.robbing != null
 	if game.robbing:
-		prog_l.text = "جارٍ سرقة %s…" % game.robbing.def.name
+		prog_l.text = "جارٍ: %s…" % game.rob_label
 		prog_bar.value = game.rob_prog
 	hint_l.text = hint
 	hint_l.get_parent().visible = hint != ""

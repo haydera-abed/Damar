@@ -53,6 +53,9 @@ var _siren_light: OmniLight3D
 var _phase := randf()
 var height := 1.5
 var is_hero := false
+var locked := false          # مقفلة (سيارة المعرض/شاحنة المشتري): لا يمكن قيادتها
+var exhibit := false
+var _paint_mats: Array[StandardMaterial3D] = []
 
 
 func setup(model: String, is_police: bool) -> void:
@@ -191,6 +194,7 @@ func _apply_materials(root: Node, model: String) -> void:
 						p.normal_scale = 0.25
 						p.uv1_scale = src.uv1_scale
 					m = p
+					_paint_mats.append(p)
 				elif nm.contains("glass"):
 					var g := StandardMaterial3D.new()
 					g.albedo_color = Color(0.02, 0.025, 0.03, 0.55)
@@ -231,6 +235,11 @@ func _apply_materials(root: Node, model: String) -> void:
 					sm.set_shader_parameter("albedo_tex", src.albedo_texture)
 					_paint_cache[key] = sm
 				mi.set_surface_override_material(si, _paint_cache[key])
+
+
+func set_paint(c: Color) -> void:
+	for m in _paint_mats:
+		m.albedo_color = c
 
 
 func _light_box(p: Vector3, m: Material, size := Vector3(0.4, 0.13, 0.05)) -> void:

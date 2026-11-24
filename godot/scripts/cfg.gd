@@ -8,7 +8,7 @@ const CELL := BLOCK + ROAD
 const HALF := N * CELL / 2.0
 const BOUND := HALF + ROAD / 2.0 - 1.2
 const LANE := 3.6               # إزاحة المسار عن منتصف الشارع
-const GOAL := 250000
+const GOAL := 1000000
 const POLICE_TARGET := [2, 2, 3, 5, 7, 9]
 const NONE := Vector2i(-1, -1)
 
@@ -21,8 +21,11 @@ const STORE_TYPES := {
 	"gas":   {"name": "محطة وقود",     "value": [1100, 2600],   "time": 5.0,  "heat": 2, "cd": 75.0,  "color": Color("ffa21f"), "h": 7.0},
 	"jewel": {"name": "مجوهرات",       "value": [7000, 15000],  "time": 7.0,  "heat": 3, "cd": 120.0, "color": Color("ff3fd0"), "h": 9.0},
 	"bank":  {"name": "البنك المركزي", "value": [30000, 60000], "time": 10.0, "heat": 5, "cd": 200.0, "color": Color("45ff8a"), "h": 16.0},
+	"gallery": {"name": "معرض الفنون", "value": [0, 0], "time": 0.0, "heat": 2, "cd": 0.0, "color": Color("b27cff"), "h": 9.0},
+	"showroom": {"name": "معرض السيارات الفاخرة", "value": [0, 0], "time": 0.0, "heat": 4, "cd": 0.0, "color": Color("ffd23f"), "h": 7.0},
+	"police": {"name": "مركز الشرطة", "value": [0, 0], "time": 0.0, "heat": 5, "cd": 0.0, "color": Color("3d7bff"), "h": 9.0},
 }
-const STORE_LIST := ["bank", "jewel", "jewel", "gas", "gas", "gas", "shop", "shop", "shop", "shop", "shop", "shop"]
+const STORE_LIST := ["bank", "police", "gallery", "showroom", "jewel", "jewel", "gas", "gas", "gas", "shop", "shop", "shop", "shop", "shop"]
 const CAR_MODELS := ["sedan", "sedan_sports", "suv", "suv_luxury", "taxi", "van", "hatchback_sports", "delivery_van"]
 
 

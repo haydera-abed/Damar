@@ -25,6 +25,19 @@ var robbing: City.StoreData = null
 var rob_prog := 0.0
 var won_shown := false
 var rain_on := true
+var crime: Crime
+var cop: Cop
+var gangs: Gangs
+var extras: Extras
+var weapons: Weapons
+var civilians: Array[Civilian] = []
+var rob_label := ""
+var jail_t := 0.0
+var most_wanted_t := 0.0
+var _down_t := 0.0
+var _arrested_by_surrender := false
+var _wanted_at_bust := 0
+var _new_save := true
 
 var _spawn_t := 0.0
 var _rain: GPUParticles3D
@@ -85,6 +98,23 @@ func _ready() -> void:
 	for i in 2:
 		_spawn_police(false)
 
+	weapons = Weapons.new(self)
+	add_child(weapons)
+	crime = Crime.new(self)
+	add_child(crime)
+	crime.setup()
+	cop = Cop.new(self)
+	add_child(cop)
+	cop.setup()
+	gangs = Gangs.new(self)
+	add_child(gangs)
+	gangs.setup()
+	extras = Extras.new(self)
+	add_child(extras)
+	extras.setup()
+	_spawn_civilians(40)
+	_load_extra()
+
 	hud = Hud.new()
 	hud.game = self
 	add_child(hud)
@@ -99,6 +129,94 @@ func _ready() -> void:
 
 
 # ---------------------------------------------------------------- واجهة للسكربتات الأخرى
+# ---------------------------------------------------------------- أنظمة الجريمة والقتال
+func _spawn_civilians(n: int) -> void:
+	var inner := city.blocks.filter(func(b): return absf(b.center.x) < Cfg.HALF and absf(b.center.y) < Cfg.HALF)
+	for i in n:
+		var b: Dictionary = inner[randi() % inner.size()]
+		var c := Civilian.new()
+		add_child(c)
+		c.setup(self, Vector3(b.center.x, 0, b.center.y))
+		civilians.append(c)
+
+
+func shootables() -> Array:
+	var out: Array = []
+	out.append_array(officers)
+	out.append_array(civilians)
+	if state == "play" and player.car == null:
+		out.append(player)
+	out.append_array(cop.robbers)
+	out.append_array(gangs.members)
+	return out
+
+
+func on_gunshot(origin: Vector3, by_player: bool) -> void:
+	for c in civilians:
+		if c.global_position.distance_to(origin) < 45.0:
+			c.scare()
+	if by_player:
+		var near_cop := _police_sees(70.0)
+		for o in officers:
+			if o.global_position.distance_to(origin) < 45.0:
+				near_cop = true
+		if near_cop:
+			set_wanted(maxi(wanted, 2), "أطلقت النار! الشرطة سترد بالرصاص")
+		elif wanted == 0:
+			set_wanted(1, "بلاغ عن إطلاق نار")
+
+
+func on_civilian_killed(_c: Civilian, from: Node) -> void:
+	if from != player:
+		return
+	add_wanted(1, "قتلت مدنياً!")
+	crime_cd = 0.0
+	if wanted >= 5:
+		most_wanted_t = 30.0
+		hud.toast("⚠ أنت المطلوب الأول — موقعك مكشوف لكل دوريات المدينة", Color("ff4b4b"))
+
+
+func on_officer_down(o: Officer, from: Node) -> void:
+	if from == player:
+		crime_cd = 0.0
+		set_wanted(wanted + 2, "أسقطت شرطياً!")
+	if is_instance_valid(o.car):
+		o.car.exit_cd = 999.0
+
+
+func on_player_hit(_dmg: float) -> void:
+	cam.shake = maxf(cam.shake, 0.25)
+	hud.flash_damage()
+
+
+func on_player_downed() -> void:
+	_down_t = 0.0
+	hud.toast("سقطت مصاباً!", Color("ff4b4b"))
+
+
+func check_win() -> void:
+	if bank >= Cfg.GOAL and not won_shown:
+		won_shown = true
+		get_tree().create_timer(0.9).timeout.connect(func(): set_state("win"))
+
+
+func exit_car_force() -> void:
+	if player.car:
+		_exit_car(true)
+
+
+func remove_car(c: Car) -> void:
+	_remove_car(c)
+
+
+func save_game() -> void:
+	_save()
+
+
+func close_menu() -> void:
+	set_state("play")
+
+
 func world_running() -> bool:
 	return state == "play" or state == "menu"
 
@@ -133,6 +251,8 @@ func add_wanted(n: int, msg := "") -> void:
 
 
 func set_wanted(level: int, msg := "") -> void:
+	if cop != null and cop.on_duty:
+		return
 	level = clampi(level, 0, 5)
 	if level <= wanted:
 		return
@@ -277,6 +397,8 @@ func _police() -> Array[Car]:
 # ---------------------------------------------------------------- الحالة والقوائم
 func set_state(s: String) -> void:
 	state = s
+	if s != "ui":
+		hud.close_menu()
 	hud.show_state(s)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if s == "play" else Input.MOUSE_MODE_VISIBLE
 
@@ -284,16 +406,44 @@ func set_state(s: String) -> void:
 func _on_start() -> void:
 	_respawn()
 	set_state("play")
-	hud.toast("اسرق المتاجر ($) واهرب إلى المخبأ (H)", Color("ffd36b"))
+	if _new_save:
+		_new_save = false
+		weapons.give("pistol")
+		weapons.ammo = 36
+		crime.tools["lockpick"] = 3
+		cash = 2000
+		hud.toast("البس القناع (X)، اسرق، بِع للمشتري ($)، واغسل المال في المخبأ (H)", Color("ffd36b"))
+	else:
+		hud.toast("مرحباً بعودتك — السمعة %d" % crime.notoriety_level(), Color("ffd36b"))
 
 
 func _on_continue() -> void:
 	if state == "busted":
-		_respawn()
+		if jail_t > 0.0:
+			return
+		_respawn(true)
 	set_state("play")
 
 
 func _unhandled_input(e: InputEvent) -> void:
+	if e.is_action_pressed("pause") and state == "ui":
+		set_state("play")
+		return
+	if state == "play":
+		if e.is_action_pressed("mask"):
+			if cop.on_duty:
+				hud.toast("أنت شرطي في المناوبة")
+			else:
+				crime.toggle_mask()
+		elif e.is_action_pressed("weapon"):
+			weapons.cycle()
+		elif e.is_action_pressed("surrender") and player.car == null and not player.downed:
+			if player.surrendered:
+				player.set_surrender(false)
+				hud.toast("أنزلت يديك")
+			elif wanted > 0:
+				player.set_surrender(true)
+				hud.toast("استسلمت ✋ — ستحتفظ بأسلحتك لكن تخسر الحقيبة", Color("ffd36b"))
 	if e.is_action_pressed("pause"):
 		if state == "play":
 			set_state("paused")
@@ -303,9 +453,11 @@ func _unhandled_input(e: InputEvent) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
-func _respawn() -> void:
+func _respawn(from_jail := false) -> void:
 	if player.car:
 		_exit_car(true)
+	player.revive()
+	most_wanted_t = 0.0
 	wanted = 0
 	last_seen = 0.0
 	arrest = 0.0
@@ -323,17 +475,59 @@ func _respawn() -> void:
 			pol[i].tgt_n = Cfg.NONE
 	player.visible = true
 	player.process_mode = Node.PROCESS_MODE_INHERIT
-	player.teleport(city.safe_pos + Vector3(0, 0.2, 0), city.safe_sx * PI / 2.0)
-	cam.yaw = city.safe_sx * PI / 2.0
+	var spawn := city.safe_pos
+	var yaw := city.safe_sx * PI / 2.0
+	if from_jail:
+		for s in city.stores:
+			if s.type == "police":
+				spawn = s.pos
+				yaw = s.sx * PI / 2.0
+	player.teleport(spawn + Vector3(0, 0.2, 0), yaw)
+	cam.yaw = yaw
 
 
 func _bust() -> void:
-	hud.set_bust_text("صادرت الشرطة %s كانت بحوزتك. مالك في المخبأ بأمان." % Cfg.money(cash) if cash > 0 else "لم يكن معك مال هذه المرة. مالك في المخبأ بأمان.")
+	var surrendered := player.surrendered
+	var lost_bag := crime.lose_bag()
+	var lost_cash := cash
+	var lines := []
+	if lost_bag > 0:
+		lines.append("صودرت حقيبة الغنائم (%s)" % Cfg.money(lost_bag))
+	if lost_cash > 0:
+		lines.append("صودرت النقود القذرة (%s)" % Cfg.money(lost_cash))
+	if not surrendered and weapons.current != "":
+		lines.append("صودر سلاحك: " + Weapons.CATALOG[weapons.current].name)
+		weapons.drop_current()
+	lines.append("الحساب البنكي وطاولة الغسيل بأمان.")
 	cash = 0
+	_wanted_at_bust = maxi(wanted, 1)
+	jail_t = 15.0 * _wanted_at_bust * (0.5 if surrendered else 1.0)
+	_arrested_by_surrender = surrendered
 	arrest = 0.0
 	robbing = null
+	crime.masked = false
+	player.human.set_mask(false)
 	sfx.busted()
+	hud.set_bust_text("\n".join(lines))
 	set_state("busted")
+	hud.update_jail(jail_t, bank)
+	save_game()
+
+
+## رشوة الضابط: تُدفع من الحساب البنكي، وقد يرفضها
+func try_bribe(amount: int) -> void:
+	if bank < amount or jail_t <= 0.0:
+		return
+	var chance := clampf(0.2 + float(amount) / 200000.0 * 0.75 - _wanted_at_bust * 0.04, 0.05, 0.95)
+	if randf() < chance:
+		bank -= amount
+		jail_t = 0.0
+		hud.toast("قبل الضابط الرشوة 🤝 (%s)" % Cfg.money(amount), Color("7dff9e"))
+	else:
+		jail_t += 10.0
+		hud.toast("رفض الضابط الرشوة! +10 ثوانٍ", Color("ff6b6b"))
+	hud.update_jail(jail_t, bank)
+	save_game()
 
 
 func _load() -> void:
@@ -341,6 +535,17 @@ func _load() -> void:
 	if cf.load(SAVE_PATH) == OK:
 		bank = cf.get_value("game", "bank", 0)
 	won_shown = bank >= Cfg.GOAL
+
+
+func _load_extra() -> void:
+	var cf := ConfigFile.new()
+	if cf.load(SAVE_PATH) == OK and cf.has_section_key("game", "crime"):
+		_new_save = false
+		cash = cf.get_value("game", "cash", 0)
+		crime.from_dict(cf.get_value("game", "crime", {}))
+		weapons.from_dict(cf.get_value("game", "weapons", {}))
+		cop.from_dict(cf.get_value("game", "cop", {}))
+		gangs.from_dict(cf.get_value("game", "gangs", {}))
 
 
 ## مصابيح أمامية حقيقية ليلاً لأقرب السيارات إلى الكاميرا (مجموعة ثابتة من الأضواء لأداء ثابت)
@@ -362,6 +567,12 @@ func cycle_quality() -> void:
 	_save_quality()
 	hud.toast("الجودة: " + WorldEnv.QUALITY_NAMES[quality], Color("9fd0ff"))
 	hud.refresh_settings()
+
+
+func toggle_season() -> void:
+	gangs.season_mode = not gangs.season_mode
+	hud.refresh_settings()
+	save_game()
 
 
 func toggle_day_cycle() -> void:
@@ -420,6 +631,11 @@ func _save() -> void:
 	var cf := ConfigFile.new()
 	cf.load(SAVE_PATH)
 	cf.set_value("game", "bank", bank)
+	cf.set_value("game", "cash", cash)
+	cf.set_value("game", "crime", crime.to_dict())
+	cf.set_value("game", "weapons", weapons.to_dict() if not cop.on_duty else cop._saved_weapons)
+	cf.set_value("game", "cop", cop.to_dict())
+	cf.set_value("game", "gangs", gangs.to_dict())
 	cf.save(SAVE_PATH)
 
 
@@ -443,7 +659,12 @@ func _police_sees(range_m := 60.0) -> bool:
 
 
 func _enter_car(c: Car) -> void:
-	if c.police:
+	if c.locked:
+		hud.toast("مقفلة" + (" بإنذار — تحتاج جهاز تشويش" if c.exhibit else ""), Color("ff9b3b"))
+		return
+	if player.surrendered or player.downed:
+		return
+	if c.police and not cop.on_duty:
 		set_wanted(wanted + 2, "سرقت سيارة شرطة!")
 	elif c.ai == Car.AI.TRAFFIC and _police_sees():
 		set_wanted(wanted + 1, "الشرطة رأتك تسرق سيارة!")
@@ -488,73 +709,36 @@ func _exit_car(force := false) -> void:
 
 # ---------------------------------------------------------------- منطق اللعب
 func _interactions(dt: float) -> void:
+	robbing = null
 	var hint := ""
+	if player.downed or player.surrendered:
+		_hint = "✋ مستسلم — اضغط Z لإنزال يديك" if player.surrendered else "مُصاب…"
+		return
 	var p := player_pos()
-	var near: City.StoreData = null
-	var nd := INF
-	for s in city.stores:
-		var d := (s.pos - p).length()
-		if d < nd:
-			nd = d
-			near = s
+	hint = cop.interact_station(dt)
+	if hint == "":
+		hint = gangs.interact(dt)
+	if hint == "":
+		hint = extras.interact(dt)
+	if hint == "":
+		hint = cop.interact(dt) if cop.on_duty else crime.interact(dt)
 	var d_safe := (city.safe_pos - p).length()
 	if player.car == null:
-		if near and nd < 3.2:
-			if near.cooldown > 0.0:
-				hint = "%s مغلق الآن — عُد بعد %d ثانية" % [near.def.name, ceili(near.cooldown)]
-				robbing = null
-			elif Input.is_action_pressed("interact"):
-				if robbing != near:
-					robbing = near
-					rob_prog = 0.0
-					set_wanted(near.def.heat, "🚨 انطلق جهاز الإنذار! الشرطة في الطريق")
-				rob_prog += dt / near.def.time
-				player.facing = -near.sx * PI / 2.0
-				if int(time * 2.5) != int((time - dt) * 2.5):
-					sfx.beep()
-				if rob_prog >= 1.0:
-					var amt := roundi(randf_range(near.def.value[0], near.def.value[1]) / 10.0) * 10
-					cash += amt
-					near.cooldown = near.def.cd
-					robbing = null
-					rob_prog = 0.0
-					set_wanted(mini(5, maxi(wanted, near.def.heat) + (1 if near.def.heat >= 3 else 0)))
-					last_seen = 0.0
-					hud.toast("+%s  اهرب إلى المخبأ!" % Cfg.money(amt), Color("7dff9e"))
-					sfx.cash()
-			else:
-				if robbing:
-					hud.toast("توقفت السرقة")
-					robbing = null
-				hint = "اضغط مطولاً E لسرقة %s  (%s – %s)" % [near.def.name, Cfg.money(near.def.value[0]), Cfg.money(near.def.value[1])]
-		elif robbing:
-			hud.toast("ابتعدت — فشلت السرقة")
-			robbing = null
-		player.robbing = robbing != null
-		if d_safe < 3.6:
-			hint = "اضغط E لإخفاء %s في المخبأ" % Cfg.money(cash) if cash > 0 else "المخبأ — أحضر المال المسروق هنا"
-			if Input.is_action_just_pressed("interact") and cash > 0:
-				if wanted > 0:
-					hud.toast("الشرطة تلاحقك! تخلّص منها أولاً", Color("ff6b6b"))
-				else:
-					bank += cash
-					hud.toast("تم إخفاء %s 💰" % Cfg.money(cash), Color("7dff9e"))
-					cash = 0
-					_save()
-					sfx.cash()
-					if bank >= Cfg.GOAL and not won_shown:
-						won_shown = true
-						get_tree().create_timer(0.9).timeout.connect(func(): set_state("win"))
+		if hint == "" and d_safe < 3.6:
+			hint = "اضغط E لإدارة المخبأ (الغسيل، الأمان، الرفوف)" + ("  (قيد الغسيل: %s)" % Cfg.money(int(crime.launder_pool)) if crime.launder_pool > 0 else "")
+			if Input.is_action_just_pressed("interact"):
+				gangs.open_base()
 		var car := _nearest_car(3.8)
 		if car and hint == "":
-			hint = "اضغط F لسرقة سيارة الشرطة (+2 نجمة)" if car.police else "اضغط F لركوب السيارة"
+			if car.locked:
+				hint = "سيارة مقفلة"
+			else:
+				hint = "اضغط F لسرقة سيارة الشرطة (+2 نجمة)" if car.police else "اضغط F لركوب السيارة"
 		if car and Input.is_action_just_pressed("vehicle"):
 			_enter_car(car)
 	else:
-		if near and nd < 7.0 and near.cooldown <= 0.0:
-			hint = "انزل من السيارة (F) لسرقة %s" % near.def.name
-		if d_safe < 7.0 and cash > 0:
-			hint = "انزل من السيارة (F) لإخفاء المال"
+		if hint == "" and d_safe < 7.0 and cash > 0:
+			hint = "انزل من السيارة (F) لغسيل المال في المخبأ"
 		if Input.is_action_just_pressed("vehicle"):
 			_exit_car()
 	_hint = hint
@@ -578,6 +762,9 @@ func _wanted_update(dt: float) -> void:
 			if not o.returning and o.distance_to_player() < 35.0:
 				seen = true
 				break
+	if most_wanted_t > 0.0:
+		most_wanted_t -= dt
+		seen = true
 	if seen or robbing:
 		last_seen = 0.0
 	else:
@@ -608,21 +795,40 @@ func _police_manager(dt: float) -> void:
 
 func _arrest_update(dt: float) -> void:
 	var rate := 0.0
+	var p := player_pos()
+	var helpless := player.surrendered or player.downed
+	if player.downed:
+		_down_t += dt
+		var cops_near := false
+		for o in officers:
+			if not o.dead and o.distance_to_player() < 60.0:
+				cops_near = true
+		for c in _police():
+			if c.chase and (c.pos2() - p).length() < 60.0:
+				cops_near = true
+		if not cops_near and _down_t > 8.0:
+			player.revive()
+			player.health = 35.0
+			hud.toast("نهضت مصاباً — اهرب!", Color("ffd36b"))
 	if wanted > 0:
-		var p := player_pos()
 		if player.car == null:
 			for o in officers:
-				if not o.returning and o.distance_to_player() < 1.9:
+				if o.dead or o.returning:
+					continue
+				var d: float = o.distance_to_player()
+				if helpless and d < 2.2:
+					rate += 1.4                     # تقييد بالأصفاد
+				elif not helpless and wanted <= 1 and d < 1.9:
 					rate += 0.75
 			for c in _police():
-				if c.chase and (c.pos2() - p).length() < 7.0 and absf(c.speed) < 3.0:
-					rate += 0.25
+				if c.chase and (c.pos2() - p).length() < 7.0 and absf(c.speed) < 3.0 and (helpless or wanted <= 1):
+					rate += 0.3
 		elif absf(player.car.speed) < 3.0:
 			for c in _police():
 				if c.chase and (c.pos2() - p).length() < 7.0:
 					rate += 0.35
 			for o in officers:
-				if o.distance_to_player() < 3.3:
+				if not o.dead and o.distance_to_player() < 3.3:
 					rate += 0.5
 	arrest = minf(1.0, arrest + rate * dt) if rate > 0.0 else maxf(0.0, arrest - dt * 0.6)
 	if arrest >= 1.0:
@@ -637,8 +843,12 @@ func _physics_process(dt: float) -> void:
 	for s in city.stores:
 		s.cooldown = maxf(0.0, s.cooldown - dt)
 	_police_manager(dt)
+	crime.tick(dt)
 	if state != "play":
 		return
+	cop.tick(dt)
+	gangs.tick(dt)
+	weapons.tick(dt)
 	_interactions(dt)
 	_wanted_update(dt)
 	_arrest_update(dt)
@@ -657,6 +867,9 @@ func _process(dt: float) -> void:
 	if Input.is_action_just_pressed("horn") and state == "play":
 		sfx.horn()
 
+	if state == "busted" and jail_t > 0.0:
+		jail_t = maxf(0.0, jail_t - dt)
+		hud.update_jail(jail_t, bank)
 	if cam.is_processing():
 		cam.update_camera(dt)
 	_rain.emitting = world.rain > 0.03
@@ -666,7 +879,7 @@ func _process(dt: float) -> void:
 	var k := 1.0 + sin(time * 3.0) * 0.08
 	for s in city.stores:
 		var open := s.cooldown <= 0.0
-		s.ring.visible = open
+		s.ring.visible = false
 		s.beacon.visible = open
 		s.ring.scale = Vector3(k, 0.05, k)
 		s.sign.modulate = s.def.color * (2.2 if open else 0.35)
@@ -695,71 +908,163 @@ func _autotest() -> void:
 		if a.begins_with("--out="):
 			out = a.substr(6)
 	DirAccess.make_dir_recursive_absolute(out)
-	await _frames(30)
-	var early := 0
-	for car in cars:
-		if car.global_basis.y.y < 0.5:
-			early += 1
-	print("AUTOTEST early flipped=%d" % early)
-	await _shot(out + "/1_menu.png")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE_PATH))
+	_new_save = true
+	await _frames(20)
 	_on_start()
-	await _frames(40)
-	cam.yaw = city.safe_sx * PI / 2.0
-	await _frames(30)
-	await _shot(out + "/2_start.png")
-	# ركوب السيارة والقيادة
-	var c := _nearest_car(30.0)
-	player.global_position = c.global_position + Vector3(2, 0, 0)
-	await _frames(5)
+	await _frames(20)
+	print("AUTOTEST start: weapon=%s ammo=%d cash=%d tools=%s" % [weapons.current, weapons.ammo, cash, crime.tools])
+	# 1) القيادة
+	var c := _nearest_car(40.0)
 	_enter_car(c)
 	Input.action_press("move_forward")
-	for i in 5:
-		await _frames(30)
-		print("AUTOTEST speed t=%.1fs kmh=%.0f pos=%s" % [(i + 1) * 0.5, absf(c.speed) * 3.6, c.global_position.snapped(Vector3(0.1, 0.1, 0.1))])
+	await _frames(150)
 	print("AUTOTEST drive: in_car=%s speed_kmh=%.0f" % [player.car != null, absf(c.speed) * 3.6])
-	await _shot(out + "/3_drive.png")
 	Input.action_release("move_forward")
-	await _frames(120)
+	await _frames(90)
 	_exit_car(true)
-	await _frames(10)
-	# سرقة متجر مجوهرات
+	await _frames(5)
+	# 2) سرقة المجوهرات بلا قناع ثم بقناع
 	var st: City.StoreData = null
 	for s in city.stores:
 		if s.type == "jewel":
 			st = s
+	crime.toggle_mask()
 	player.teleport(st.pos + Vector3(0, 0.3, 0), -st.sx * PI / 2.0)
 	cam.yaw = st.sx * PI / 2.0
-	await _frames(10)
+	await _frames(5)
 	Input.action_press("interact")
-	await _frames(int(st.def.time * 60.0) + 20)
+	await _frames(int(6.0 * 60) + 15)
 	Input.action_release("interact")
-	print("AUTOTEST rob: cash=%d wanted=%d" % [cash, wanted])
-	await _frames(300)
+	print("AUTOTEST rob: bag=%d value=%d wanted=%d masked=%s" % [crime.bag.size(), crime.bag_value(), wanted, crime.masked])
+	await _shot(out + "/1_rob.png")
+	# 3) البيع للمشتري
+	wanted = 0
+	var f: Vector3 = crime.fences[0]
+	player.teleport(f + Vector3(0, 0.3, 0) + (Vector3(-f.x, 0, -f.z).normalized() * 3.0), 0.0)
+	await _frames(5)
+	Input.action_press("interact")
+	await _frames(2)
+	Input.action_release("interact")
+	await _frames(2)
+	print("AUTOTEST fence: cash=%d bag=%d notoriety=%d xp=%d" % [cash, crime.bag.size(), crime.notoriety_level(), crime.notoriety_xp])
+	await _shot(out + "/2_fence.png")
+	# 4) السوق السوداء
+	player.teleport(crime.dealer_pos + Vector3(0, 0.3, -1.5), 0.0)
+	await _frames(5)
+	Input.action_press("interact")
+	await _frames(2)
+	Input.action_release("interact")
+	await _frames(3)
+	await _shot(out + "/3_market.png")
+	crime._buy("minidrill")
+	print("AUTOTEST market: state=%s minidrill=%d cash=%d" % [state, crime.tools.get("minidrill", 0), cash])
+	close_menu()
+	# 5) إطلاق النار على مدني
+	var victim: Civilian = civilians[0]
+	player.teleport(victim.global_position + Vector3(4, 0.3, 0), 0.0)
+	await _frames(3)
+	weapons.shoot(player.global_position + Vector3(0, 1.4, 0), (victim.global_position + Vector3(0, 1.0, 0) - player.global_position - Vector3(0, 1.4, 0)).normalized(), 30.0, 60.0, player)
+	await _frames(3)
+	print("AUTOTEST shoot: civilian_dead=%s wanted=%d" % [victim.dead, wanted])
+	# 6) مطاردة بمطلوبية عالية: الشرطة تطلق النار
+	set_wanted(3, "test")
+	var hp0 := player.health
+	await _frames(600)
 	var pol := _police()
-	var nearest := INF
-	for p in pol:
-		nearest = minf(nearest, (p.pos2() - player_pos()).length())
-	print("AUTOTEST chase: police=%d chasing=%d nearest=%.1f officers=%d arrest=%.2f state=%s" % [pol.size(), pol.filter(func(x): return x.chase).size(), nearest, officers.size(), arrest, state])
+	print("AUTOTEST chase: police=%d officers=%d health=%.0f->%.0f downed=%s state=%s arrest=%.2f" % [pol.size(), officers.size(), hp0, player.health, player.downed, state, arrest])
 	if officers.size() > 0:
 		var o: Node3D = officers[0]
-		cam.yaw = atan2(o.global_position.x - player.global_position.x, o.global_position.z - player.global_position.z) + 0.5
-		cam.pitch = 0.15
-	await _frames(20)
+		cam.yaw = atan2(o.global_position.x - player.global_position.x, o.global_position.z - player.global_position.z) + 0.4
 	await _shot(out + "/4_chase.png")
-	await _frames(400)
-	print("AUTOTEST end: state=%s cash=%d bank=%d" % [state, cash, bank])
+	# 7) الاستسلام والسجن
+	if state == "play":
+		player.set_surrender(true)
+		for i in 900:
+			await get_tree().physics_frame
+			if state != "play":
+				break
+	print("AUTOTEST jail: state=%s jail_t=%.0f bag=%d cash=%d weapon=%s" % [state, jail_t, crime.bag.size(), cash, weapons.current])
+	await _shot(out + "/5_jail.png")
+	bank = 300000
+	try_bribe(200000)
+	print("AUTOTEST bribe: jail_t=%.0f bank=%d" % [jail_t, bank])
+	jail_t = 0.0
+	_on_continue()
+	await _frames(5)
+	# 8) الغسيل
+	cash = 50000
+	wanted = 0
+	player.teleport(city.safe_pos + Vector3(0, 0.3, 0), 0.0)
+	var bank0 := bank
+	crime.open_laundering()
+	crime._deposit_launder()
+	await _shot(out + "/6_launder.png")
+	close_menu()
+	await _frames(120)
+	print("AUTOTEST launder: pool=%.0f bank %d -> %d" % [crime.launder_pool, bank0, bank])
+	# 9) مهنة الشرطي
+	wanted = 0
+	crime.bag.clear()
+	player.teleport(cop.desk_pos + Vector3(0, 0.3, 0), 0.0)
+	await _frames(3)
+	cop.start_duty()
+	await _frames(5)
+	cop._spawn_robber()
+	var rb: Robber = cop.robbers[-1]
+	rb.state = Robber.S.FLEEING
+	rb._surrender()
+	player.teleport(rb.global_position + Vector3(1.2, 0.3, 0), 0.0)
+	await _frames(3)
+	var bank_c := bank
+	Input.action_press("interact")
+	await _frames(2)
+	Input.action_release("interact")
+	await _frames(2)
+	print("AUTOTEST cop: on_duty=%s weapons=%s arrests=%d bank %d -> %d" % [cop.on_duty, weapons.owned, cop.shift_arrests, bank_c, bank])
+	await _shot(out + "/7_cop.png")
+	cop.end_duty()
+	# 10) الاستيلاء على حي
+	var di := -1
+	for i in 9:
+		if gangs.owner_of[i] != 0:
+			di = i
+			break
+	player.teleport(gangs.flags[di] + Vector3(0, 0.3, 0.8), 0.0)
+	await _frames(3)
+	Input.action_press("interact")
+	await _frames(2)
+	Input.action_release("interact")
+	await _frames(20)
+	var guards := gangs._alive_near(gangs.flags[di], 30.0)
+	cam.yaw = PI
+	await _shot(out + "/8_gang.png")
+	for m in gangs.members.duplicate():
+		m.take_damage(999.0, player)
+	Input.action_press("interact")
+	await _frames(int(10.5 * 60))
+	Input.action_release("interact")
+	print("AUTOTEST gang: guards=%d owner=%d owned=%d" % [guards, gangs.owner_of[di], gangs.owned_count()])
+	# 11) القاعدة والتأجير
+	player.teleport(city.safe_pos + Vector3(0, 0.3, 0), 0.0)
+	crime.bag.append({"name": "تحفة", "value": 5000, "kind": "art"})
+	gangs.open_base()
+	gangs._stash_bag()
+	await _shot(out + "/9_base.png")
+	print("AUTOTEST base: stash=%d bag=%d security=%d" % [gangs.stash.size(), crime.bag.size(), gangs.security])
+	close_menu()
+	player.teleport(extras.terminals[0] + Vector3(0, 0.3, 0.6), 0.0)
+	await _frames(3)
+	Input.action_press("interact")
+	await _frames(2)
+	Input.action_release("interact")
+	await _frames(30)
+	print("AUTOTEST rental: rental=%s" % [extras.rental != null])
 	var flipped := 0
 	for car in cars:
 		if car.global_basis.y.y < 0.5:
 			flipped += 1
-	var moving := 0
-	for car in cars:
-		if car.ai == Car.AI.TRAFFIC and car.linear_velocity.length() > 2.0:
-			moving += 1
-	print("AUTOTEST cars: total=%d flipped=%d traffic_moving=%d" % [cars.size(), flipped, moving])
-	for car in cars:
-		if car.global_basis.y.y < 0.5:
-			print("  FLIPPED ai=%d police=%s pos=%s up=%s" % [car.ai, car.police, car.global_position.snapped(Vector3(0.1, 0.1, 0.1)), car.global_basis.y.snapped(Vector3(0.01, 0.01, 0.01))])
+	print("AUTOTEST end: cars=%d flipped=%d civilians=%d" % [cars.size(), flipped, civilians.size()])
 	get_tree().quit()
 
 

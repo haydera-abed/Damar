@@ -228,7 +228,7 @@ func _build_blocks() -> void:
 	var used_blocks := {safe_lot.block: true}
 	for type in Cfg.STORE_LIST:
 		var pool := shuffled.filter(func(l): return not used.has(l.pos) and not used_blocks.has(l.block))
-		if type == "bank":
+		if type == "bank" or type == "police":
 			pool.sort_custom(func(a, b): return a.pos.length() < b.pos.length())
 		if pool.is_empty():
 			break
@@ -329,7 +329,7 @@ func _make_store(type: String, l: Dictionary) -> StoreData:
 	s.def = def
 	s.sx = l.sx
 	var p: Vector3 = l.pos
-	var floors: int = {"shop": 2, "gas": 2, "jewel": 3, "bank": 5}[type]
+	var floors: int = {"shop": 2, "gas": 2, "jewel": 3, "bank": 5, "gallery": 3, "showroom": 2, "police": 4}[type]
 	# واجهة المتجر: أبواب زجاجية كبيرة ونوافذ عرض في الطابق الأرضي
 	_add_kit_building(p, floors, Vector3(l.sx, 0, 0), {"door": "door_centered_large_01", "window": "window_centered_large_01"})
 	var half := MODULES * FacadeKit.MOD / 2.0

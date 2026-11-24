@@ -35,16 +35,33 @@ func _draw() -> void:
 		if inside:
 			var poly := _clip(pts, c, r - 3)
 			if poly.size() >= 3:
-				draw_colored_polygon(poly, Color("1f3d24") if b.park else Color("1a1d24"))
+				var base := Color("1f3d24") if b.park else Color("1a1d24")
+				var bc := Vector3(b.center.x, 0, b.center.y)
+				if absf(bc.x) < Cfg.HALF and absf(bc.z) < Cfg.HALF:
+					var gc: Color = Gangs.GANGS[game.gangs.owner_of[game.gangs.district_at(bc)]].color
+					base = base.lerp(gc, 0.22)
+				draw_colored_polygon(poly, base)
 	# الأيقونات
 	for s in game.city.stores:
 		var col: Color = s.def.color if s.cooldown <= 0.0 else Color(0.35, 0.35, 0.35)
-		_icon(s.pos, c, r, col, 9.0 if s.type == "bank" else 7.0, "$", s.cooldown <= 0.0 and s.type != "shop")
+		var lbl: String = {"police": "P", "gallery": "A", "showroom": "C"}.get(s.type, "$")
+		_icon(s.pos, c, r, col, 9.0 if s.type in ["bank", "police"] else 7.0, lbl, s.cooldown <= 0.0 and s.type != "shop")
+	for f in game.crime.fences:
+		_icon(f, c, r, Color("39e27d"), 6.5, "$", true)
+	_icon(game.crime.dealer_pos, c, r, Color("ff9b3b"), 6.0, "B", true)
+	for i in 9:
+		_icon(game.gangs.flags[i], c, r, Gangs.GANGS[game.gangs.owner_of[i]].color, 4.0, "", false)
+	for m in game.gangs.members:
+		if is_instance_valid(m) and not m.dead:
+			_icon(m.global_position, c, r, Color("ff2d2d"), 3.5, "", false)
 	_icon(game.city.safe_pos, c, r, Color("3dff7a"), 8.0, "H", true)
 	var blink := int(game.time * 4.0) % 2 == 0
 	for car in game.cars:
 		if car.police:
 			_icon(car.global_position, c, r, (Color("ff3030") if blink else Color("3060ff")) if car.chase else Color("8fa8ff"), 4.5, "", false)
+	for rb in game.cop.robbers:
+		if not rb.dead and not rb.arrested:
+			_icon(rb.global_position, c, r, Color("ff2d2d") if blink else Color("ffffff"), 5.0, "", true)
 	for o in game.officers:
 		_icon(o.global_position, c, r, Color("6f9bff"), 3.0, "", false)
 	# اللاعب
