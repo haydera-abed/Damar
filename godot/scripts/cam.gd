@@ -8,6 +8,7 @@ var pitch := 0.3
 var last_mouse := -10.0
 var shake := 0.0
 var orbit := 0.0
+var indoor := false            # داخل منزل: كاميرا أقرب وأخفض كي لا تخترق السقف
 
 
 func _unhandled_input(e: InputEvent) -> void:
@@ -30,7 +31,9 @@ func update_camera(dt: float) -> void:
 	var t: Vector3 = game.player_pos()
 	var aiming: bool = game.weapons.aiming
 	var ty := 1.5 if car else 1.65
-	var dist := 9.5 + absf(car.speed) * 0.07 if car else (2.6 if aiming else 5.2)
+	var dist := 9.5 + absf(car.speed) * 0.07 if car else (2.6 if aiming else (3.0 if indoor else 5.2))
+	if indoor and not car:
+		pitch = minf(pitch, 0.32)
 	if car and game.time - last_mouse > 1.0:
 		yaw = lerp_angle(yaw, car.heading(), minf(1.0, dt * 2.6))
 		pitch = lerpf(pitch, 0.26, minf(1.0, dt * 1.5))

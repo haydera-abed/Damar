@@ -40,7 +40,8 @@ func _draw() -> void:
 				if absf(bc.x) < Cfg.HALF and absf(bc.z) < Cfg.HALF:
 					var gc: Color = Gangs.GANGS[game.gangs.owner_of[game.gangs.district_at(bc)]].color
 					base = base.lerp(gc, 0.22)
-				draw_colored_polygon(poly, base)
+				if not Geometry2D.triangulate_polygon(poly).is_empty():   # تجنّب مضلعات متدهورة عند حافة الدائرة
+					draw_colored_polygon(poly, base)
 	# الأيقونات
 	for s in game.city.stores:
 		var col: Color = s.def.color if s.cooldown <= 0.0 else Color(0.35, 0.35, 0.35)

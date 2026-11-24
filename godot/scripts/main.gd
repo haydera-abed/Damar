@@ -1119,7 +1119,7 @@ func _process(dt: float) -> void:
 		hud.update_jail(jail_t, bank)
 	if cam.is_processing():
 		cam.update_camera(dt)
-	_rain.emitting = world.rain > 0.03
+	_rain.emitting = world.rain > 0.03 and not land.inside_home
 	_rain.amount_ratio = clampf(world.rain, 0.05, 1.0)
 	_rain.global_position = cam.global_position + Vector3(0, 18, 0)
 	# المؤثرات البصرية للمتاجر
@@ -1364,10 +1364,38 @@ func _land_test(out: String) -> void:
 	Input.action_release("interact")
 	await _frames(5)
 	print("AUTOTEST rent: home=%s house=%s tax=%.2f base=%s" % [land.home, sp.house != null, land.tenant_tax(), land.base_title()])
-	player.teleport(sp.sign + Vector3(sp.sx * 9.0, 0.3, 6.0), 0.0)
-	cam.yaw = -sp.sx * PI / 2.0 + 0.5
-	await _frames(30)
-	await _shot(out + "/10_plot.png")
+	# الدخول إلى المنزل مشياً عبر الباب
+	var door_w: Vector3 = sp.house.position + Vector3(sp.sx * (Land.HOUSE.x / 2.0 + 2.5), 0.3, 0)
+	player.teleport(door_w, -sp.sx * PI / 2.0)
+	cam.yaw = -sp.sx * PI / 2.0
+	await _frames(20)
+	var door_open: float = absf(sp.door.rotation.y)
+	Input.action_press("move_forward")
+	await _frames(int(1.4 * 60))
+	Input.action_release("move_forward")
+	await _frames(10)
+	print("AUTOTEST enter: door_open=%.2f inside=%s cam_indoor=%s hint=%s" % [door_open, land.inside_home, cam.indoor, _hint])
+	# محطات الداخل
+	var seen := []
+	for st in sp.stations:
+		player.teleport(st.pos + Vector3(0, 0.3, 0), 0.0)
+		await _frames(3)
+		seen.append("%s:%s" % [st.kind, _hint.substr(0, 14)])
+	print("AUTOTEST stations: %s" % [seen])
+	# بيت ساكن آخر: الباب مغلق
+	var npc_plot: Dictionary = {}
+	for st2 in land.settlements:
+		for k in range(1, Land.PLOTS):
+			if st2.plots[k].tenant != "" and st2.plots[k] != sp:
+				npc_plot = st2.plots[k]
+	if not npc_plot.is_empty():
+		player.teleport(npc_plot.house.position + Vector3(npc_plot.sx * (Land.HOUSE.x / 2.0 + 2.5), 0.3, 0), -npc_plot.sx * PI / 2.0)
+		cam.yaw = -npc_plot.sx * PI / 2.0
+		await _frames(10)
+		Input.action_press("move_forward")
+		await _frames(int(1.4 * 60))
+		Input.action_release("move_forward")
+		print("AUTOTEST npc-door: inside=%s dist_from_center=%.1f" % [land._is_inside(npc_plot, player_pos()), Vector2(player_pos().x - npc_plot.pos.x, player_pos().z - npc_plot.pos.z).length()])
 	# الأمان: نظام + صمامات + إنذار + خزنة
 	land._buy("security", Land.SECURITY_COST)
 	land._buy("fuse", Land.FUSE_COST)
@@ -1445,6 +1473,12 @@ func _landshots() -> void:
 	land._set_tenant(other, 2, "أنت")
 	land.home = Vector2i(4, 2)
 	land._refresh(other)
+	crime.launder_pool = 90000.0
+	for i in 9:
+		gangs.stash.append({"name": "تحفة", "value": 5000, "kind": "art"})
+	land.security = true
+	land.safe = true
+	land._update_interior(other.plots[2])
 	land._set_tenant(other, 3, "")
 	hud.visible = false
 	var spots := []
@@ -1453,6 +1487,12 @@ func _landshots() -> void:
 		var sx: int = st.plots[1].sx
 		spots.append(["%s_aerial" % st.district, c + Vector3(sx * 38.0, 26.0, 30.0), c])
 		spots.append(["%s_street" % st.district, c + Vector3(sx * 33.0, 1.8, -14.0), c + Vector3(sx * 14.0, 2.0, 8.0)])
+	var hp: Dictionary = other.plots[2]
+	var hs: int = hp.sx
+	var hc: Vector3 = hp.pos
+	spots.append(["interior_desk", hc + Vector3(hs * 3.8, 1.75, 3.0), hc + Vector3(-hs * 4.0, 0.9, -2.2)])
+	spots.append(["interior_racks", hc + Vector3(hs * 3.6, 1.75, -3.2), hc + Vector3(-hs * 1.5, 1.0, 4.0)])
+	spots.append(["door", hc + Vector3(hs * 9.0, 1.7, 2.5), hc + Vector3(hs * 5.0, 1.3, 0.0)])
 	for spot in spots:
 		for lk in [["noon", 13.0, 0], ["night", 22.0, 0]]:
 			world.hour = lk[1]

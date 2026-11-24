@@ -87,16 +87,15 @@ func _make_settlement(b: Dictionary) -> void:
 		var pos := c + Vector3(q.x * 12.0, 0.15, q.y * 12.0)
 		var sign_pos := c + Vector3(q.x * 23.2, 0.15, q.y * 12.0)
 		var plot := {"pos": pos, "sx": q.x, "sign": sign_pos, "tenant": "", "house": null, "label": null}
-		if k == 0:
-			# قصر المالك: مبنى حقيقي من طقم الواجهات
-			game.city._add_kit_building(pos, 3, Vector3(q.x, 0, 0))
-		else:
+		if k != 0:
 			_fence(pos, q.x)
 		plot.label = game.crime._label("", Color.WHITE, sign_pos + Vector3(0, 3.1, 0), 64)
 		plot.label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		_sign_post(sign_pos, q.x)
 		game.city._zone_ring(sign_pos, Color("ffd36b") if k == 0 else Color("e6e6e6"), 0.9, 1.15)
 		s.plots.append(plot)
+		if k == 0:
+			_build_house(plot, false, true)      # فيلا المالك (تُفتح لمالكها إن جعلها منزله)
 	settlements.append(s)
 
 
@@ -154,66 +153,266 @@ func _sign_post(p: Vector3, sx: int) -> void:
 	_root.add_child(board)
 
 
-## منزل بسيط على قطعة: جدران، سقف جملوني، باب ونوافذ مضاءة، وتصادم (يمكن إزالته عند الطرد أو المداهمة الفيدرالية)
-func _build_house(plot: Dictionary, mine: bool) -> void:
+const HOUSE := Vector3(10, 3.2, 9)       # عرض (نحو الشارع) × ارتفاع الطابق × عمق
+const VILLA := Vector3(14, 3.4, 13)
+const WALL_T := 0.25
+
+var inside_home := false                  # اللاعب داخل منزله الآن (للكاميرا والمطر)
+var _menu_ctx := ""
+
+
+## منزل يمكن دخوله: جدران حقيقية بفتحة باب، باب يُفتح لساكنه فقط، أرضية وسقف وإضاءة داخلية،
+## وأثاث يعمل (طاولة الغسيل، الرفوف، الخزنة، لوحة الأمان) في منزلك. الفيلا = قصر مالك المستوطنة.
+func _build_house(plot: Dictionary, mine: bool, villa := false) -> void:
 	_clear_house(plot)
+	var size: Vector3 = VILLA if villa else HOUSE
+	var w := size.x
+	var hh := size.y
+	var d := size.z
+	var t := WALL_T
 	var h := Node3D.new()
 	_root.add_child(h)
 	h.position = plot.pos
 	var sx: int = plot.sx
-	var wall := _house_mats[_rng.randi() % _house_mats.size()]
+	var wall: StandardMaterial3D = _house_mats[_rng.randi() % _house_mats.size()]
 	if mine:
 		wall = _house_mats[0]
-	var body := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(10, 5, 9)
-	body.mesh = bm
-	body.material_override = wall
-	body.position = Vector3(0, 2.5, 0)
-	h.add_child(body)
+	if villa:
+		wall = _mat(Color("d9cdb5"), 0.85)
+	var wood := _mat(Color("6b4a2f"), 0.7)
+	# الأرضية والسقف
+	_hbox(h, Vector3(0, 0.08, 0), Vector3(w, 0.12, d), wood, false)
+	_hbox(h, Vector3(0, hh + 0.1, 0), Vector3(w, 0.2, d), wall)
+	# الجدران: خلفي، جانبيان، وأمامي بفتحة باب عرضها 1.6 م
+	_hbox(h, Vector3(-sx * (w / 2.0 - t / 2.0), hh / 2.0, 0), Vector3(t, hh, d), wall)
+	for zs in [-1, 1]:
+		_hbox(h, Vector3(0, hh / 2.0, zs * (d / 2.0 - t / 2.0)), Vector3(w, hh, t), wall)
+	var seg := (d - 1.6) / 2.0
+	for zs in [-1, 1]:
+		_hbox(h, Vector3(sx * (w / 2.0 - t / 2.0), hh / 2.0, zs * (0.8 + seg / 2.0)), Vector3(t, hh, seg), wall)
+	_hbox(h, Vector3(sx * (w / 2.0 - t / 2.0), (2.4 + hh) / 2.0, 0), Vector3(t, hh - 2.4, 1.6), wall)
+	# طابق علوي للفيلا (مصمت) ثم السقف الجملوني
+	var top := hh + 0.2
+	if villa:
+		_hbox(h, Vector3(0, top + 1.6, 0), Vector3(w - 1.0, 3.2, d - 1.0), wall)
+		top += 3.2
 	var roof := MeshInstance3D.new()
 	var pm := PrismMesh.new()
-	pm.size = Vector3(11, 2.6, 10)
+	pm.size = Vector3(w + 1.0, 2.4, d + 1.0)
 	roof.mesh = pm
-	var rm := StandardMaterial3D.new()
-	rm.albedo_color = Color("6e2f22") if not mine else Color("2f4f7a")
-	rm.roughness = 0.8
-	roof.material_override = rm
-	roof.position = Vector3(0, 6.3, 0)
+	roof.material_override = _mat(Color("2f4f7a") if mine else (Color("3b3a36") if villa else Color("6e2f22")), 0.8)
+	roof.position = Vector3(0, top + 1.2, 0)
 	h.add_child(roof)
-	var door := MeshInstance3D.new()
-	var dm := BoxMesh.new()
-	dm.size = Vector3(0.1, 2.3, 1.3)
-	door.mesh = dm
-	var dmat := StandardMaterial3D.new()
-	dmat.albedo_color = Color("3b2a1d")
-	door.material_override = dmat
-	door.position = Vector3(sx * 5.02, 1.15, 0)
-	h.add_child(door)
-	var win := StandardMaterial3D.new()
-	win.albedo_color = Color(1.0, 0.82, 0.5)
+	# نوافذ مضاءة على الجدران الجانبية والأمامية (من الخارج)
+	var win := _mat(Color(1.0, 0.82, 0.5), 0.3)
 	win.emission_enabled = true
 	win.emission = Color(1.0, 0.78, 0.45)
-	win.emission_energy_multiplier = 1.6
-	for z in [-2.8, 2.8]:
-		var w := MeshInstance3D.new()
-		var wm := BoxMesh.new()
-		wm.size = Vector3(0.08, 1.2, 1.4)
-		w.mesh = wm
-		w.material_override = win
-		w.position = Vector3(sx * 5.03, 2.8, z)
-		h.add_child(w)
-	var sb := StaticBody3D.new()
-	sb.collision_layer = Cfg.LAYER_WORLD
-	sb.collision_mask = 0
-	var cs := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = Vector3(10, 5, 9)
-	cs.shape = shape
-	cs.position = Vector3(0, 2.5, 0)
-	sb.add_child(cs)
-	h.add_child(sb)
+	win.emission_energy_multiplier = 1.4
+	for zs in [-1, 1]:
+		for xo in [-w / 4.0, w / 4.0]:
+			_hbox(h, Vector3(xo, 1.9, zs * (d / 2.0 + 0.01)), Vector3(1.3, 1.1, 0.05), win, false)
+			if villa:
+				_hbox(h, Vector3(xo, hh + 1.9, zs * (d / 2.0 - 0.49)), Vector3(1.3, 1.1, 0.05), win, false)
+	for zo in [-d / 4.0 - 0.4, d / 4.0 + 0.4]:
+		_hbox(h, Vector3(sx * (w / 2.0 + 0.01), 1.9, zo), Vector3(0.05, 1.1, 1.3), win, false)
+	# الباب: مفصل على طرف الفتحة، يدور نحو الخارج عند اقتراب الساكن
+	var pivot := Node3D.new()
+	pivot.position = Vector3(sx * (w / 2.0 - t / 2.0), 0, -0.8)
+	h.add_child(pivot)
+	_hbox(pivot, Vector3(0, 1.2, 0.8), Vector3(0.08, 2.35, 1.56), _mat(Color("3b2a1d"), 0.6))
 	plot.house = h
+	plot.door = pivot
+	plot.house_mine = mine
+	plot.size = size
+	plot.stations = []
+	if mine:
+		_furnish(plot, h, size)
+
+
+func _mat(c: Color, rough: float) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = c
+	m.roughness = rough
+	return m
+
+
+func _hbox(parent: Node3D, pos: Vector3, size: Vector3, mat: Material, collide := true) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = size
+	mi.mesh = bm
+	mi.material_override = mat
+	mi.position = pos
+	parent.add_child(mi)
+	if collide:
+		var sb := StaticBody3D.new()
+		sb.collision_layer = Cfg.LAYER_WORLD
+		sb.collision_mask = 0
+		var cs := CollisionShape3D.new()
+		var shape := BoxShape3D.new()
+		shape.size = size
+		cs.shape = shape
+		sb.position = pos
+		sb.add_child(cs)
+		parent.add_child(sb)
+	return mi
+
+
+## أثاث منزلك: كل قطعة لها نقطة تفاعل (E)
+func _furnish(plot: Dictionary, h: Node3D, size: Vector3) -> void:
+	var sx: int = plot.sx
+	var w := size.x
+	var hh := size.y
+	var d := size.z
+	var lamp := OmniLight3D.new()
+	lamp.light_color = Color(1.0, 0.85, 0.65)
+	lamp.light_energy = 1.8
+	lamp.omni_range = maxf(w, d)
+	lamp.shadow_enabled = false
+	lamp.position = Vector3(0, hh - 0.4, 0)
+	h.add_child(lamp)
+	_hbox(h, Vector3(0, hh - 0.05, 0), Vector3(0.6, 0.08, 0.6), _glow(Color(1.0, 0.9, 0.7)), false)
+	_hbox(h, Vector3(sx * 0.6, 0.15, 0), Vector3(3.6, 0.02, 2.6), _mat(Color("7a2630"), 1.0), false)   # سجادة
+	var metal := _mat(Color("2b2e33"), 0.35)
+	metal.metallic = 0.8
+	# طاولة الغسيل عند الجدار الخلفي + رزم المال عليها
+	var desk_x := -sx * (w / 2.0 - 1.0)
+	_hbox(h, Vector3(desk_x, 0.45, -d / 4.0), Vector3(1.2, 0.9, 2.4), _mat(Color("4b3a2a"), 0.6))
+	_hbox(h, Vector3(desk_x + sx * 0.1, 0.98, -d / 4.0 - 0.6), Vector3(0.5, 0.16, 0.4), _glow(Color(0.3, 1.0, 0.5), 0.6), false)  # آلة عدّ النقود
+	var money: Array = []
+	for k in 6:
+		var m := _hbox(h, Vector3(desk_x + (k % 2) * 0.3 - 0.15, 0.98 + (k / 2) * 0.11, -d / 4.0 + 0.3), Vector3(0.26, 0.1, 0.5), _mat(Color("4f8a4a"), 0.8), false)
+		money.append(m)
+	plot.money = money
+	plot.stations.append({"kind": "desk", "pos": h.position + Vector3(desk_x + sx * 1.3, 0, -d / 4.0)})
+	# الرفوف على الجدار الجانبي + صناديق الغنائم
+	var rz := d / 2.0 - 0.55
+	_hbox(h, Vector3(-sx * 0.5, 1.0, rz), Vector3(3.2, 2.0, 0.6), metal)
+	var items: Array = []
+	for row in 3:
+		_hbox(h, Vector3(-sx * 0.5, 0.35 + row * 0.62, rz - 0.31), Vector3(3.2, 0.05, 0.05), metal, false)
+		for k in 5:
+			var b := _hbox(h, Vector3(-sx * 0.5 + (k - 2) * 0.6, 0.55 + row * 0.62, rz - 0.38), Vector3(0.45, 0.34, 0.3), _mat(Color("8a6f45"), 0.9), false)
+			items.append(b)
+	plot.rack_items = items
+	plot.stations.append({"kind": "racks", "pos": h.position + Vector3(-sx * 0.5, 0, rz - 1.3)})
+	# الخزنة (تظهر بعد شرائها)
+	var safe_mesh := _hbox(h, Vector3(-sx * (w / 2.0 - 0.8), 0.55, rz - 0.2), Vector3(0.9, 1.1, 0.9), metal, false)
+	plot.safe_mesh = safe_mesh
+	plot.stations.append({"kind": "safe", "pos": h.position + Vector3(-sx * (w / 2.0 - 0.8), 0, rz - 1.3)})
+	# لوحة نظام الأمان بجوار الباب (ضوء أخضر = محمي، أحمر = بلا أمان)
+	var led := _glow(Color.RED)
+	_hbox(h, Vector3(sx * (w / 2.0 - 0.3), 1.45, -1.7), Vector3(0.06, 0.55, 0.4), metal, false)
+	_hbox(h, Vector3(sx * (w / 2.0 - 0.34), 1.6, -1.7), Vector3(0.04, 0.08, 0.2), led, false)
+	plot.led = led
+	plot.stations.append({"kind": "panel", "pos": h.position + Vector3(sx * (w / 2.0 - 1.1), 0, -1.7)})
+	# أريكة وطاولة صغيرة
+	_hbox(h, Vector3(sx * 0.9, 0.38, -d / 2.0 + 0.75), Vector3(2.4, 0.75, 0.9), _mat(Color("394a63"), 0.9))
+	_hbox(h, Vector3(sx * 0.9, 0.25, -d / 2.0 + 2.0), Vector3(1.2, 0.5, 0.6), _mat(Color("5a4330"), 0.6))
+	_update_interior(plot)
+
+
+func _glow(c: Color, e := 2.0) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = c
+	m.emission_enabled = true
+	m.emission = c
+	m.emission_energy_multiplier = e
+	return m
+
+
+## يعكس حالة قاعدتك داخل المنزل: رزم المال، الغنائم على الرفوف، الخزنة، لون لوحة الأمان
+func _update_interior(plot: Dictionary) -> void:
+	if not plot.get("house_mine", false) or plot.house == null:
+		return
+	var pool: float = game.crime.launder_pool
+	var n_money := 0 if pool <= 0.0 else clampi(int(ceil(pool / 20000.0)), 1, 6)
+	for i in plot.money.size():
+		plot.money[i].visible = i < n_money
+	var n_items: int = game.gangs.stash.size()
+	for i in plot.rack_items.size():
+		plot.rack_items[i].visible = i < mini(n_items, 15)
+	plot.safe_mesh.visible = safe
+	var c := Color(0.2, 1.0, 0.35) if security else Color(1.0, 0.15, 0.1)
+	plot.led.albedo_color = c
+	plot.led.emission = c
+
+
+func _home_plot() -> Dictionary:
+	if home.x < 0:
+		return {}
+	return settlements[home.x].plots[home.y]
+
+
+func _is_inside(plot: Dictionary, p: Vector3) -> bool:
+	if plot.is_empty() or plot.house == null:
+		return false
+	var size: Vector3 = plot.size
+	var l: Vector3 = p - plot.pos
+	return absf(l.x) < size.x / 2.0 - 0.1 and absf(l.z) < size.z / 2.0 - 0.1
+
+
+## الباب والحالة الداخلية (كل إطار فيزيائي)
+func _tick_home(dt: float) -> void:
+	var p: Vector3 = game.player_pos()
+	var hp := _home_plot()
+	inside_home = game.player.car == null and _is_inside(hp, p)
+	game.cam.indoor = inside_home
+	if not hp.is_empty() and hp.house != null:
+		var door: Node3D = hp.door
+		var door_pos: Vector3 = hp.house.position + door.position
+		var near := game.player.car == null and Vector2(p.x - door_pos.x, p.z - door_pos.z).length() < 3.2
+		var target: float = hp.sx * PI / 2.0 * 0.95 if near else 0.0
+		door.rotation.y = lerp_angle(door.rotation.y, target, minf(1.0, dt * 6.0))
+		_update_interior(hp)
+
+
+func _station_hint() -> String:
+	var hp := _home_plot()
+	if not inside_home or hp.is_empty():
+		return ""
+	var p: Vector3 = game.player_pos()
+	var e := Input.is_action_just_pressed("interact")
+	for st in hp.stations:
+		var sp: Vector3 = st.pos
+		if Vector2(p.x - sp.x, p.z - sp.z).length() > 1.4:
+			continue
+		match st.kind:
+			"desk":
+				if e:
+					game.crime.open_laundering()
+				return "طاولة الغسيل — اضغط E (قيد الغسيل: %s)" % Cfg.money(int(game.crime.launder_pool))
+			"racks":
+				if e:
+					open_racks()
+				return "الرفوف — اضغط E (%d/%d غنيمة)" % [game.gangs.stash.size(), Gangs.STASH_CAP]
+			"safe":
+				if not safe:
+					return "مكان الخزنة — اشترِها من لوحة الأمان عند الباب"
+				return "🗄 الخزنة تحمي الرفوف من المقتحمين (إلا من مفتاح رئيسي)"
+			"panel":
+				if e:
+					open_panel()
+				return "لوحة نظام الأمان — اضغط E (%s)" % ("محمي" if security else "بلا حماية")
+	return "منزلك — اقترب من طاولة الغسيل أو الرفوف أو لوحة الأمان"
+
+
+func open_racks() -> void:
+	var gg: Gangs = game.gangs
+	var cr: Crime = game.crime
+	var sellable := cr.bag.filter(func(i): return i.kind != "deposit_key")
+	var items: Array = [
+		{"text": "خزّن الغنائم على الرفوف (%d غنيمة)" % sellable.size(), "enabled": not sellable.is_empty() and gg.stash.size() < Gangs.STASH_CAP, "cb": func(): gg._stash_bag(); open_racks()},
+		{"text": "خذ الغنائم إلى الحقيبة (%d · %s)" % [gg.stash.size(), Cfg.money(gg.stash_value())], "enabled": not gg.stash.is_empty() and cr.bag.size() < Crime.BAG_SLOTS, "cb": func(): gg._take_stash(); open_racks()},
+	]
+	game.hud.open_menu("الرفوف", "%d/%d غنيمة · قيمتها %s%s" % [gg.stash.size(), Gangs.STASH_CAP, Cfg.money(gg.stash_value()), " · 🗄 محمية بخزنة" if safe else ""], items)
+
+
+func open_panel() -> void:
+	_menu_ctx = "panel"
+	var items: Array = security_items()
+	items.append_array(home_items())
+	game.hud.open_menu("لوحة نظام الأمان", security_text() + base_subtitle(), items)
 
 
 func _clear_house(plot: Dictionary) -> void:
@@ -243,7 +442,7 @@ func _set_tenant(s: Dictionary, k: int, who: String) -> void:
 	if who == "":
 		_clear_house(s.plots[k])
 	else:
-		_build_house(s.plots[k], who == "أنت" or (game.net.is_online() and who == game.net.my_name))
+		_build_house(s.plots[k], Vector2i(settlements.find(s), k) == home)
 	_refresh(s)
 
 
@@ -256,8 +455,12 @@ func owner_text(s: Dictionary) -> String:
 
 
 func _refresh(s: Dictionary) -> void:
+	var si := settlements.find(s)
 	for k in PLOTS:
 		var p: Dictionary = s.plots[k]
+		var is_home := Vector2i(si, k) == home
+		if p.house != null and p.get("house_mine", false) != is_home:
+			_build_house(p, is_home, k == 0)     # أضف الأثاث أو أزله
 		var l: Label3D = p.label
 		if k == 0:
 			l.text = "%s (مستوى %d)\nالمالك: %s" % [s.name, s.level, owner_text(s)]
@@ -358,7 +561,10 @@ func _buy(what: String, cost: int) -> void:
 		"safe": safe = true
 	game.sfx.cash()
 	game.save_game()
-	game.gangs.open_base()
+	if inside_home:
+		open_panel()
+	else:
+		game.gangs.open_base()
 
 
 func _leave_plot() -> void:
@@ -439,6 +645,8 @@ func on_robbery(total: int) -> void:
 func interact(_dt: float) -> String:
 	if game.player.car != null or game.cop.on_duty:
 		return ""
+	if inside_home:
+		return _station_hint()
 	var p: Vector3 = game.player_pos()
 	for si in settlements.size():
 		var s: Dictionary = settlements[si]
@@ -461,7 +669,7 @@ func _plot_hint(si: int, k: int) -> String:
 	if Vector2i(si, k) == home:
 		if e:
 			game.gangs.open_base()
-		return "اضغط E لإدارة منزلك (الغسيل، الأمان، الرفوف)"
+		return "منزلك — ادخل من الباب، أو اضغط E للقائمة السريعة"
 	if k == 0:
 		if mine_settle:
 			if e:
@@ -576,6 +784,7 @@ func _collect(si: int) -> void:
 
 # ---------------------------------------------------------------- الدورات الزمنية
 func tick(dt: float) -> void:
+	_tick_home(dt)
 	_tax_t -= dt
 	if _tax_t <= 0.0:
 		_tax_t = TAX_PERIOD
