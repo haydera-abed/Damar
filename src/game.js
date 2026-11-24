@@ -731,7 +731,13 @@ class Car {
 // ------------------------------------------------------------------ حالة اللعبة
 let time = 0, state = 'menu';
 const cars = [], officers = [];
-const W = { level: 0, lastSeen: 0, crimeCd: 0 };
+// نظام الملاحقة على طريقة ROB RUN (بلا نجوم):
+// clean = لا أحد يبحث عنك · alarm = إنذار والشرطة متجهة إلى مكان الجريمة ولا تعرفك
+// chase = رأتك الشرطة وتعرّفت عليك فتلاحقك مباشرة · search = أفلتّ منهم فيمشّطون آخر مكان رأوك فيه
+// level = شدة الاستجابة (مخفية): تحدد عدد الدوريات وإطلاق النار
+const W = { level: 0, mode: 'clean', modeT: 0, lastSeen: 0, crimeCd: 0, tx: 0, tz: 0, id: 0, car: null };
+const MODE_TIME = { alarm: (l) => 25 + l * 4, search: (l) => 18 + l * 5 };
+const hot = () => W.mode === 'chase' || W.mode === 'search';
 let spawnT = 0, arrest = 0, shake = 0, robbing = null, robProg = 0, wonShown = false;
 let cash = 0, bank = 0, dirty = 0, goods = 0;          // نقد قذر معك، نظيف في المخبأ، قذر في المخبأ، بضائع
 const gun = { owned: false, drawn: false, ammo: MAG, reloadT: 0, cd: 0 };
@@ -857,6 +863,16 @@ function policeAI(c, dt) {
   c.exitCd -= dt;
   if (c.officer) { c.input = { throttle: 0, steer: 0, brake: true, hand: false }; return; }
   if (!c.chase) { trafficAI(c, dt, 12); return; }
+  if (W.mode !== 'chase') { // يتجه إلى مكان البلاغ ثم يمشّط الشوارع حوله
+    if (!c.tgtN) { c.tgtN = nearestNode(c.pos.x, c.pos.y); c.prevN = null; }
+    let tp = lanePoint(c.prevN, c.tgtN);
+    if (Math.hypot(tp.x - c.pos.x, tp.z - c.pos.y) < 8) {
+      const nx = pickNext(c, nearestNode(W.tx, W.tz)); c.prevN = c.tgtN; c.tgtN = nx; tp = lanePoint(c.prevN, c.tgtN);
+    }
+    const far = Math.hypot(W.tx - c.pos.x, W.tz - c.pos.y) > 60;
+    c.input = steerTo(c, tp.x, tp.z, W.mode === 'alarm' && far ? 26 : 13, dt);
+    return;
+  }
   const P = player.pos, PV = player.car ? player.car.vel : player.vel;
   const d = dist2(c.pos, P.x, P.y);
   const maxV = Math.min(27 + W.level * 1.8, 37);
@@ -888,7 +904,7 @@ function updateOfficers(dt) {
     if (!cars.includes(o.car)) { removeOfficer(o); continue; }
     const P = player.pos;
     const dP = dist2(o.pos, P.x, P.y);
-    o.ret = W.level === 0 || state !== 'play' || (player.car && dP > 5);
+    o.ret = W.mode !== 'chase' || state !== 'play' || (player.car && dP > 5);
     const tx = o.ret ? o.car.pos.x : P.x, tz = o.ret ? o.car.pos.y : P.y;
     const dx = tx - o.pos.x, dz = tz - o.pos.y, d = Math.hypot(dx, dz);
     const spd = o.ret ? 5 : 6.9, stop = o.ret ? 0.1 : 1.0;
@@ -904,7 +920,7 @@ function updateOfficers(dt) {
     o.H.g.position.set(o.pos.x, 0, o.pos.y); o.H.g.rotation.y = o.facing;
     animHuman(o.H, sp, dt, !o.ret && d < 4);
     // من 3 نجوم فما فوق يطلق الضباط النار على اللص الراجل (إلا إن استسلم)
-    if (!o.ret && W.level >= 3 && !player.car && !player.surrender && state === 'play') {
+    if (!o.ret && W.mode === 'chase' && W.level >= 3 && !player.car && !player.surrender && state === 'play') {
       o.shootT -= dt;
       if (o.shootT <= 0 && dP < 24 && segHit(o.pos.x, o.pos.y, P.x, P.y, 1.5) >= 1) { o.shootT = mr(0.9, 1.7); copShoot(o, dP); }
     }
@@ -961,13 +977,13 @@ function shoot() {
   sound.shot(1);
   if (hit) {
     hit.hp -= 50; hit.vel.set(0, 0);
-    if (hit.hp <= 0) { downOfficer(hit); setWanted(Math.max(W.level + 1, 3), 'أسقطت شرطياً! (+نجمة)'); }
-    else setWanted(Math.max(W.level, 3), 'أطلقت النار على شرطي!');
+    if (hit.hp <= 0) { downOfficer(hit); setWanted(Math.max(W.level + 1, 3), 'أسقطت شرطياً!', true); }
+    else setWanted(Math.max(W.level, 3), 'أطلقت النار على شرطي!', true);
     W.lastSeen = 0;
-  } else if (carHit && carHit.police) { setWanted(Math.max(W.level, 3), 'أطلقت النار على سيارة شرطة!'); W.lastSeen = 0; }
+  } else if (carHit && carHit.police) { setWanted(Math.max(W.level, 3), 'أطلقت النار على سيارة شرطة!', true); W.lastSeen = 0; }
   else {
     const heard = cars.some((c) => c.police && dist2(c.pos, player.pos.x, player.pos.y) < 90) || officers.some((q) => dist2(q.pos, player.pos.x, player.pos.y) < 60);
-    if (heard) { if (W.level < 2) setWanted(2, 'سُمع إطلاق نار! الشرطة في الطريق'); W.lastSeen = 0; }
+    if (heard) setWanted(Math.max(W.level, 2), W.mode === 'chase' ? '' : '🚨 سُمع إطلاق نار! الشرطة في الطريق');
   }
   if (gun.ammo <= 0) gun.reloadT = 1.4;
 }
@@ -1002,7 +1018,7 @@ function carCollisions() {
         if (pc && (a === pc || b === pc) && -vrel > 5) {
           crashFx(-vrel);
           const other = a === pc ? b : a;
-          if (other.police && -vrel > 9 && W.crimeCd <= 0) { setWanted(W.level + 1, 'اصطدمت بسيارة شرطة!'); W.crimeCd = 4; }
+          if (other.police && -vrel > 9 && W.crimeCd <= 0) { setWanted(W.level + 1, 'اصطدمت بسيارة شرطة!', true); W.crimeCd = 4; }
         }
       }
     }
@@ -1126,19 +1142,34 @@ const K = (...c) => c.some((k) => keys[k]);
 const $ = (id) => document.getElementById(id);
 const ui = {};
 ['cash', 'bank', 'goalFill', 'goalText', 'stars', 'wantedText', 'loseBar', 'loseFill', 'arrest', 'arrestFill', 'toast', 'progress', 'progLabel', 'progFill', 'hint', 'speedo', 'kmh', 'stamFill', 'stamWrap', 'goods', 'dirty', 'hpFill', 'weapon', 'maskTag', 'cross', 'hurt'].forEach((k) => (ui[k] = $(k)));
-const starEls = [...ui.stars.children];
 const uiCache = {};
 const setText = (el, key, v) => { if (uiCache[key] !== v) { uiCache[key] = v; el.textContent = v; } };
 let toastT = 0;
 function toast(msg, color = '#fff') { ui.toast.textContent = msg; ui.toast.style.color = color; ui.toast.classList.add('show'); toastT = 2.6; }
 
-function setWanted(lvl, msg) {
-  lvl = clamp(lvl, 0, 5);
-  if (lvl > W.level) {
-    W.level = lvl; W.lastSeen = 0;
-    if (msg) toast(msg, '#ff6b6b');
-    for (const c of cars) if (c.ai === 'police' && !c.chase) { c.chase = true; c.tgtN = null; c.prevN = null; }
-  }
+// جريمة: ترفع شدة الاستجابة وتبلّغ الشرطة بمكانها. seen = شاهدتك الشرطة فتبدأ المطاردة فوراً
+function setWanted(lvl, msg, seen = false) {
+  W.level = Math.max(W.level, clamp(lvl, 1, 5));
+  if (msg) toast(msg, '#ff6b6b');
+  if (seen) startChase();
+  else if (W.mode !== 'chase') { W.tx = player.pos.x; W.tz = player.pos.y; if (W.mode !== 'search') { W.mode = 'alarm'; W.modeT = 0; } }
+  for (const c of cars) if (c.ai === 'police' && !c.chase) { c.chase = true; c.tgtN = null; c.prevN = null; }
+}
+function startChase() {
+  W.mode = 'chase'; W.lastSeen = 0; W.modeT = 0; W.level = Math.max(W.level, 1);
+  W.tx = player.pos.x; W.tz = player.pos.y; W.car = player.car;
+  for (const c of cars) if (c.ai === 'police' && !c.chase) { c.chase = true; c.tgtN = null; c.prevN = null; }
+}
+function clearWanted(msg) {
+  W.mode = 'clean'; W.level = 0; W.lastSeen = 0; W.modeT = 0; W.car = null;
+  if (msg) toast(msg, '#8fd3ff');
+  for (const c of cars) if (c.ai === 'police') { c.chase = false; c.tgtN = null; c.prevN = null; }
+}
+// هل تتعرف عليك الشرطة إن رأتك؟ وجه مصوَّر، أو قناع، أو سلاح، أو سرقة جارية، أو حقيبة غنيمة قرب البلاغ، أو السيارة التي هربت بها
+function recognizable() {
+  if (W.id > 0 || robbing) return true;
+  if (player.car) return player.car === W.car || player.car.police;
+  return player.masked || gun.drawn || (W.mode !== 'clean' && cash + goods > 0);
 }
 
 function updateHUD(dt) {
@@ -1154,12 +1185,20 @@ function updateHUD(dt) {
   ui.hurt.style.opacity = Math.max(0, parseFloat(ui.hurt.style.opacity || 0) - dt * 1.5);
   ui.goalFill.style.width = Math.min(100, (bank / GOAL) * 100) + '%';
   setText(ui.goalText, 'goal', `الهدف: ${fmt(GOAL)}`);
-  starEls.forEach((s, i) => s.classList.toggle('on', i < W.level));
-  const hiding = W.level > 0 && W.lastSeen > 0.8;
-  ui.stars.classList.toggle('blink', hiding);
-  setText(ui.wantedText, 'wt', W.level === 0 ? '' : hiding ? 'اختفيت عن أنظارهم… ابقَ مختبئاً' : 'الشرطة تراك! اهرب واختبئ');
-  ui.loseBar.classList.toggle('hidden', !hiding);
-  if (hiding) ui.loseFill.style.width = (W.lastSeen / (5 + W.level * 2.5)) * 100 + '%';
+  const hiding = W.mode === 'chase' && W.lastSeen > 0.5;
+  const ST = {
+    clean: ['', ''],
+    alarm: ['🚨 إنذار', 'الشرطة متجهة إلى مكان الجريمة — لا تعرفك بعد'],
+    chase: ['🚔 مطارَد!', hiding ? 'اختفيت عن أنظارهم… استمر' : 'الشرطة تراك — اكسر خط الرؤية'],
+    search: ['🔦 بحث', 'الشرطة تمشّط المنطقة — ابتعد وغيّر مظهرك'],
+  }[W.mode];
+  setText(ui.stars, 'st', ST[0]);
+  ui.stars.className = 'mode-' + W.mode + (hiding ? ' blink' : '');
+  const idTxt = W.id > 0 ? `📷 وجهك معروف ${Math.floor(W.id / 60)}:${String(Math.floor(W.id % 60)).padStart(2, '0')}` : '';
+  setText(ui.wantedText, 'wt', [ST[1], idTxt].filter(Boolean).join('\n'));
+  const barK = W.mode === 'chase' ? (hiding ? W.lastSeen / 5 : -1) : W.mode === 'clean' ? -1 : W.modeT / MODE_TIME[W.mode](W.level);
+  ui.loseBar.classList.toggle('hidden', barK < 0);
+  if (barK >= 0) ui.loseFill.style.width = Math.min(1, barK) * 100 + '%';
   ui.arrest.classList.toggle('hidden', arrest <= 0.01);
   ui.arrestFill.style.width = arrest * 100 + '%';
   ui.speedo.classList.toggle('hidden', !player.car);
@@ -1201,6 +1240,12 @@ function drawMinimap() {
   for (const st of stores) {
     const hex = '#' + st.def.color.toString(16).padStart(6, '0');
     icon(st.x, st.z, st.cooldown > 0 ? '#555' : hex, (st.type === 'bank' ? 9 : 7) * MMD, '$', st.cooldown <= 0 && st.type !== 'shop');
+  }
+  if (W.mode === 'alarm' || W.mode === 'search') { // منطقة البلاغ / البحث
+    const [ax, ay] = toMap(W.tx, W.tz), pr = (W.mode === 'alarm' ? 30 : 45) * s * (1 + Math.sin(time * 4) * 0.06);
+    mctx.fillStyle = W.mode === 'alarm' ? 'rgba(255,50,50,.28)' : 'rgba(255,170,40,.22)';
+    mctx.strokeStyle = W.mode === 'alarm' ? '#ff4040' : '#ffaa30'; mctx.lineWidth = 2 * MMD;
+    mctx.beginPath(); mctx.arc(ax, ay, pr, 0, Math.PI * 2); mctx.fill(); mctx.stroke();
   }
   icon(safe.x, safe.z, '#3dff7a', 8 * MMD, 'H', true);
   icon(fence.x, fence.z, '#b26bff', 7 * MMD, 'F', goods > 0);
@@ -1254,8 +1299,8 @@ function policeSees(range = 60) {
   return false;
 }
 function enterCar(c) {
-  if (c.police) setWanted(W.level + 2, 'سرقت سيارة شرطة!');
-  else if (c.ai === 'traffic' && policeSees()) setWanted(W.level + 1, 'الشرطة رأتك تسرق سيارة!');
+  if (c.police) setWanted(W.level + 2, 'سرقت سيارة شرطة!', true);
+  else if (c.ai === 'traffic' && policeSees()) setWanted(W.level + 1, 'الشرطة رأتك تسرق سيارة!', true);
   c.ai = 'player'; c.chase = false; player.car = c; robbing = null;
   if (gun.drawn) holster();
   player.H.g.visible = false;
@@ -1288,7 +1333,7 @@ function interactions(dt) {
         if (robbing !== near) {
           robbing = near; robProg = 0;
           if (player.masked) setWanted(near.def.heat, '🚨 انطلق جهاز الإنذار! الشرطة في الطريق');
-          else setWanted(near.def.heat + 1, '📷 الكاميرات صوّرت وجهك! البس القناع (X) في المرة القادمة');
+          else { setWanted(near.def.heat, '📷 الكاميرات صوّرت وجهك! الشرطة ستعرفك أينما رأتك'); W.id = 150; }
         }
         robProg += dt / near.def.time;
         player.facing = -near.sx * Math.PI / 2;
@@ -1298,7 +1343,6 @@ function interactions(dt) {
           if (near.def.goods) goods += amt; else cash += amt;
           near.cooldown = near.def.cd; robbing = null; robProg = 0;
           setWanted(Math.min(5, Math.max(W.level, near.def.heat) + (near.def.heat >= 3 ? 1 : 0)));
-          W.lastSeen = 0;
           toast(near.def.goods ? `+ مجوهرات بقيمة ${fmt(amt)} — بعها عند المشتري (F)` : `+${fmt(amt)}  اهرب إلى المخبأ!`, '#7dff9e'); sound.cash();
         }
       } else {
@@ -1309,7 +1353,7 @@ function interactions(dt) {
     if (dSafe < 3.6) {
       hint = cash > 0 ? `اضغط E لإخفاء ${fmt(cash)} في المخبأ (يبقى مالاً قذراً حتى تغسله)` : 'المخبأ — خبّئ المال المسروق هنا لتحميه من المصادرة';
       if (pressed.KeyE && cash > 0) {
-        if (W.level > 0) toast('الشرطة تلاحقك! تخلّص منها أولاً', '#ff6b6b');
+        if (hot()) toast('الشرطة تلاحقك! تخلّص منها أولاً', '#ff6b6b');
         else { dirty += cash; toast(`تم إخفاء ${fmt(cash)} 💰 — اغسله في المغسلة (L)`, '#7dff9e'); cash = 0; save(); sound.cash(); }
       }
     }
@@ -1319,7 +1363,7 @@ function interactions(dt) {
       hint = (goods > 0 ? `E بيع المجوهرات بـ ${fmt(offer)} (السعر اليوم ${Math.round(fenceRate * 100)}%)` : 'المشتري — يشتري المجوهرات المسروقة')
         + (gun.owned ? '' : `   ·   B شراء مسدس ${fmt(PISTOL_PRICE)}`);
       if ((pressed.KeyE && goods > 0) || (pressed.KeyB && !gun.owned)) {
-        if (W.level > 0) toast('المشتري لا يتعامل مع المطلوبين! اختفِ أولاً', '#ff6b6b');
+        if (hot()) toast('المشتري لا يتعامل مع المطلوبين! اختفِ أولاً', '#ff6b6b');
         else if (pressed.KeyE) { cash += offer; goods = 0; toast(`بعت المجوهرات بـ ${fmt(offer)} نقداً`, '#7dff9e'); sound.cash(); }
         else if (cash + bank < PISTOL_PRICE) toast(`تحتاج ${fmt(PISTOL_PRICE)} لشراء المسدس`, '#ff6b6b');
         else {
@@ -1332,7 +1376,7 @@ function interactions(dt) {
       const avail = cash + dirty;
       hint = avail > 0 ? `اضغط مطولاً E لغسل ${fmt(avail)} (عمولة ${LAUNDER_FEE * 100}%) — المال النظيف وحده يُحتسب للهدف` : 'مغسلة النور — تغسل المال القذر مقابل عمولة';
       if (keys.KeyE && avail > 0) {
-        if (W.level > 0) { if (pressed.KeyE) toast('لا يمكنك الغسيل وأنت مطلوب', '#ff6b6b'); }
+        if (hot()) { if (pressed.KeyE) toast('لا يمكنك الغسيل وأنت مطلوب', '#ff6b6b'); }
         else {
           let amt = Math.min(avail, dt * 9000);
           const fc = Math.min(cash, amt); cash -= fc; dirty -= amt - fc;
@@ -1344,7 +1388,7 @@ function interactions(dt) {
       } else if (launderAcc > 0) { toast(`غسلت ${fmt(launderAcc)}`, '#7dff9e'); launderAcc = 0; save(); }
     } else if (launderAcc > 0) { launderAcc = 0; save(); }
     const car = nearestCar(3.6);
-    if (car && !hint) hint = car.police ? 'اضغط F لسرقة سيارة الشرطة (+2 نجمة)' : 'اضغط F لركوب السيارة';
+    if (car && !hint) hint = car.police ? 'اضغط F لسرقة سيارة الشرطة (ستلاحقك فوراً)' : 'اضغط F لركوب السيارة';
     if (car && pressed.KeyF) enterCar(car);
   } else {
     if (near && nd < 7 && near.cooldown <= 0) hint = `انزل من السيارة (F) لسرقة ${near.def.name}`;
@@ -1358,39 +1402,41 @@ function interactions(dt) {
 
 function wantedUpdate(dt) {
   W.crimeCd -= dt;
-  if (W.level <= 0) {
-    if (!player.car && W.crimeCd <= 0 && (player.masked || gun.drawn) && policeSees(28)) {
-      setWanted(1, player.masked ? 'الشرطة اشتبهت بقناعك! انزعه (X) لتختلط بالناس' : 'الشرطة رأتك تشهر سلاحاً!'); W.crimeCd = 3;
-    }
+  W.id = Math.max(0, W.id - dt);
+  // هل تراك أي دورية أو ضابط الآن؟
+  let seen = false;
+  const P = player.pos, range = W.mode === 'chase' ? 65 : 45;
+  for (const c of cars) {
+    if (!(c.police && c.ai === 'police')) continue;
+    const d = dist2(c.pos, P.x, P.y);
+    if (d < 14 || (d < range && segHit(c.pos.x, c.pos.y, P.x, P.y, 2) >= 1)) { seen = true; break; }
+  }
+  if (!seen) for (const o of officers) if (dist2(o.pos, P.x, P.y) < 35 && segHit(o.pos.x, o.pos.y, P.x, P.y, 2) >= 1) { seen = true; break; }
+  const known = seen && recognizable();
+  if (W.mode === 'chase') {
+    if (seen) { W.lastSeen = 0; W.tx = P.x; W.tz = P.y; if (player.car) W.car = player.car; }
+    else if ((W.lastSeen += dt) > 5) { W.mode = 'search'; W.modeT = 0; toast('أفلتّ من أنظارهم — الشرطة تمشّط المنطقة', '#8fd3ff'); }
     return;
   }
-  let seen = false;
-  for (const c of cars) {
-    if (!(c.police && c.ai === 'police' && c.chase)) continue;
-    const d = dist2(c.pos, player.pos.x, player.pos.y);
-    if (d < 18 || (d < 65 && segHit(c.pos.x, c.pos.y, player.pos.x, player.pos.y, 2) >= 1)) { seen = true; break; }
+  if (known && W.crimeCd <= 0) {
+    const why = W.mode !== 'clean' ? 'الشرطة تعرّفت عليك! اهرب' : W.id > 0 ? 'الشرطة تعرّفت على وجهك!' : player.masked ? 'الشرطة اشتبهت بقناعك! انزعه (X) لتختلط بالناس' : gun.drawn ? 'الشرطة رأتك تشهر سلاحاً!' : 'الشرطة تعرّفت عليك! اهرب';
+    toast(why, '#ff6b6b'); startChase(); W.crimeCd = 2; return;
   }
-  if (!seen) for (const o of officers) if (!o.ret && dist2(o.pos, player.pos.x, player.pos.y) < 35) { seen = true; break; }
-  if (seen || robbing) W.lastSeen = 0; else W.lastSeen += dt * (player.masked ? 1 : 1.5);
-  if (W.lastSeen > 5 + W.level * 2.5) {
-    W.level--; W.lastSeen = 0;
-    if (W.level === 0) {
-      toast('تخلّصت من الشرطة! 😎', '#8fd3ff');
-      for (const c of cars) if (c.ai === 'police') { c.chase = false; c.tgtN = null; c.prevN = null; }
-    } else toast('خسرت نجمة — استمر بالاختباء', '#8fd3ff');
+  if (W.mode === 'alarm' || W.mode === 'search') {
+    if ((W.modeT += dt) > MODE_TIME[W.mode](W.level)) clearWanted(W.mode === 'search' ? 'تخلّصت من الشرطة! 😎' : 'انتهى البلاغ — الشرطة غادرت المكان');
   }
 }
 function policeManager(dt) {
   spawnT -= dt;
   const pol = cars.filter((c) => c.ai === 'police');
-  if (pol.length < POLICE_TARGET[W.level] && spawnT <= 0) { spawnPolice(W.level > 0); spawnT = W.level > 0 ? 2.2 : 8; }
-  if (W.level === 0 && pol.length > 2) {
+  if (pol.length < POLICE_TARGET[W.level] && spawnT <= 0) { spawnPolice(W.mode !== 'clean'); spawnT = W.mode === 'chase' ? 2.2 : W.mode !== 'clean' ? 4 : 8; }
+  if (W.mode === 'clean' && pol.length > 2) {
     for (const c of pol.slice(2)) if (dist2(c.pos, player.pos.x, player.pos.y) > 80 || state !== 'play') removeCar(c);
   }
 }
 function arrestUpdate(dt) {
   let rate = 0;
-  if (W.level > 0) {
+  if (W.mode === 'chase') {
     const P = player.pos;
     if (!player.car) {
       for (const o of officers) if (!o.ret && dist2(o.pos, P.x, P.y) < (player.surrender ? 3 : 1.8)) rate += player.surrender ? 1.5 : 0.75;
@@ -1418,7 +1464,7 @@ function bust() {
 }
 function respawn() {
   if (player.car) { player.car.speed = 0; player.car.vel.set(0, 0); exitCar(); }
-  W.level = 0; W.lastSeen = 0;
+  clearWanted(); W.id = 0;
   for (const o of [...officers]) removeOfficer(o);
   for (const c of cars.filter((c) => c.ai === 'police')) { c.chase = false; c.tgtN = null; c.prevN = null; }
   for (const c of cars.filter((c) => c.ai === 'police').slice(2)) removeCar(c);
@@ -1461,7 +1507,7 @@ function gearKeys() {
   }
   if (pressed.KeyZ) {
     if (player.surrender) { player.surrender = false; toast('تراجعت عن الاستسلام'); }
-    else if (W.level > 0) { player.surrender = true; holster(); robbing = null; toast('🙌 استسلمت — ستحتفظ بنصف نقودك', '#ffd36b'); }
+    else if (W.mode === 'chase') { player.surrender = true; holster(); robbing = null; toast('🙌 استسلمت — ستحتفظ بنصف نقودك', '#ffd36b'); }
     else toast('لا أحد يلاحقك لتستسلم');
   }
 }
@@ -1608,7 +1654,7 @@ function loop() {
     if ((hudT += dt) > 1 / 30) { hudT = 0; drawMinimap(); }
   }
   let siren = 0;
-  if (W.level > 0 && state === 'play') for (const c of cars) if (c.police && c.chase) siren = Math.max(siren, Math.pow(Math.max(0, 1 - dist2(c.pos, player.pos.x, player.pos.y) / 140), 1.5));
+  if (W.mode !== 'clean' && state === 'play') for (const c of cars) if (c.police && c.chase) siren = Math.max(siren, Math.pow(Math.max(0, 1 - dist2(c.pos, player.pos.x, player.pos.y) / 140), 1.5));
   sound.update(state === 'play' ? siren : 0, player.car ? Math.abs(player.car.speed) : 0, player.car ? Math.max(0, player.car.input.throttle) : 0, rainOn && state !== 'menu');
   for (const k in pressed) delete pressed[k];
   composer.render();
@@ -1617,4 +1663,4 @@ $('loading').remove();
 loop();
 
 // واجهة صغيرة للاختبار والتطوير من الطرفية
-window.__damar = { step(n, dt = 0.05) { for (let i = 0; i < n && state === 'play'; i++) { time += dt; update(dt); for (const k in pressed) delete pressed[k]; } }, get cash() { return cash; }, get bank() { return bank; }, get arrest() { return arrest; }, get goods() { return goods; }, get dirty() { return dirty; }, set cash(v) { cash = v; }, set goods(v) { goods = v; }, gun, fence, laundry, shoot, bodies, get fenceRate() { return fenceRate; }, officers, player, cars, stores, safe, W, get state() { return state; }, setState, keys, pressed, cam, setWanted };
+window.__damar = { step(n, dt = 0.05) { for (let i = 0; i < n && state === 'play'; i++) { time += dt; update(dt); for (const k in pressed) delete pressed[k]; } }, get cash() { return cash; }, get bank() { return bank; }, get arrest() { return arrest; }, get goods() { return goods; }, get dirty() { return dirty; }, set cash(v) { cash = v; }, set goods(v) { goods = v; }, gun, fence, laundry, shoot, bodies, get fenceRate() { return fenceRate; }, officers, player, cars, stores, safe, W, get state() { return state; }, setState, keys, pressed, cam, setWanted, clearWanted, startChase };
