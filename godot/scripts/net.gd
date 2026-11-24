@@ -622,6 +622,12 @@ func _land_do(id: int, kind: String, s: int, p: int) -> void:
 		"leave":
 			if plot_tenant.get(key, "") == who:
 				plot_tenant.erase(key)
+		"evict":
+			if plot_tenant.get(key, "") == "":
+				reason = "القطعة فارغة"
+			else:
+				_log("evicted %s" % plot_tenant[key])
+				plot_tenant.erase(key)
 		"buy":
 			if settle_owner[s] != "":
 				reason = "يملكها %s بالفعل" % settle_owner[s]
@@ -661,6 +667,32 @@ func land_denied(kind: String, s: int, reason: String) -> void:
 	elif kind == "buy":
 		game.land.settle_titles[lvl] += 1
 	game.hud.toast("تعذّر: " + reason + " (أُعيدت إليك الوثيقة)", Color("ff6b6b"))
+
+
+## بلاغ للجميع (مثلاً: لاعب يجمع ضرائب مستوطنته)
+func land_alert(pos: Vector3, msg: String) -> void:
+	if is_server():
+		land_alert_all.rpc(pos, msg)
+		land_alert_all(pos, msg)
+	else:
+		_req_land_alert.rpc_id(1, pos, msg)
+
+
+@rpc("any_peer", "reliable")
+func _req_land_alert(pos: Vector3, msg: String) -> void:
+	if is_server():
+		land_alert_all.rpc(pos, msg)
+		if mode == Mode.HOST:
+			land_alert_all(pos, msg)
+
+
+@rpc("authority", "reliable")
+func land_alert_all(pos: Vector3, msg: String) -> void:
+	if mode == Mode.SERVER:
+		_log(msg)
+		return
+	game.alerts.append([pos, 40.0])
+	game.hud.toast(msg, Color("ffb36b"))
 
 
 ## ضريبة الساكن تذهب إلى مالك المستوطنة (إن كان متصلاً)

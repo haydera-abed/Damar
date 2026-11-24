@@ -310,6 +310,11 @@ func _bot_tick(dt: float) -> void:
 			print("BOT landlord: home=%s owner=%s bank=%d" % [land.home, land.owner_text(land.settlements[0]), bank])
 		if _bot_t > 22.0 and _bot_t - dt <= 22.0:
 			print("BOT landlord: tenants=%s bank=%d rent_received=%d" % [[land.settlements[0].plots[1].tenant], bank, net.rent_total])
+			land.settlements[0].tax_box = 500
+			land._collect(0)                         # يُبلَّغ الجميع
+			land.eviction_rights = 1
+			crime.tools["decoder"] = 5
+			land._do_evict(0, 1, 2)                  # طرد الساكن (لاعب حقيقي)
 	elif _bot == "tenant":
 		if _bot_t > 5.0 and _bot_t - dt <= 5.0:
 			land.settle_titles[1] = 1
@@ -323,6 +328,8 @@ func _bot_tick(dt: float) -> void:
 			crime.launder_pool = 40000.0
 		if _bot_t > 20.0 and _bot_t - dt <= 20.0:
 			print("BOT tenant: pool=%.0f bank=%d" % [crime.launder_pool, bank])
+		if _bot_t > 27.0 and _bot_t - dt <= 27.0:
+			print("BOT tenant: after eviction home=%s alerts=%d" % [land.home, alerts.size()])
 	elif _bot == "cop":
 		if int(_bot_t / 5.0) != int((_bot_t - dt) / 5.0) and _bot_t > 0.0:
 			var fl := []
@@ -959,9 +966,9 @@ func _interactions(dt: float) -> void:
 	var d_safe := (city.safe_pos - p).length()
 	if player.car == null:
 		if hint == "" and d_safe < 3.6:
-			hint = "اضغط E لإدارة المخبأ (الغسيل، الأمان، الرفوف)" + ("  (قيد الغسيل: %s)" % Cfg.money(int(crime.launder_pool)) if crime.launder_pool > 0 else "")
+			hint = "موتيل Lenny — اضغط E (يحفظ نقودك فقط)" + ("  (عند Lenny: %s)" % Cfg.money(land.motel_cash) if land.motel_cash > 0 else "")
 			if Input.is_action_just_pressed("interact"):
-				gangs.open_base()
+				land.open_motel()
 		var car := _nearest_car(3.8)
 		if car and hint == "":
 			if car.locked:
@@ -1111,6 +1118,8 @@ func _process(dt: float) -> void:
 	if Input.is_action_just_pressed("toggle_mute"):
 		sfx.muted = not sfx.muted
 		hud.toast("الصوت: مكتوم" if sfx.muted else "الصوت: تشغيل")
+	if Input.is_action_just_pressed("settle_map") and state == "play" and not hud.chat_edit.visible:
+		land.open_map()
 	if Input.is_action_just_pressed("horn") and state == "play":
 		sfx.horn()
 
@@ -1334,11 +1343,28 @@ func _land_test(out: String) -> void:
 	land.docs = 20
 	bank += 2000000
 	crime.open_market()
+	land._buy_title("plot", 1)            # يجب أن يُرفض: لم تبحث عنها بعد
+	var before_research: int = land.plot_titles[1]
+	land._research("plot", 1)
+	land._research("settle", 1)
+	land._research("plot", 3)
 	land._buy_title("plot", 1)
 	land._buy_title("settle", 1)
 	land._buy_title("plot", 3)            # يجب أن يُرفض: لا تسكن مستوطنة م2
 	close_menu()
-	print("AUTOTEST titles: docs=%d plot=%s settle=%s" % [land.docs, land.plot_titles, land.settle_titles])
+	print("AUTOTEST titles: before_research=%d researched=%s docs=%d plot=%s settle=%s" % [before_research, land.researched.keys(), land.docs, land.plot_titles, land.settle_titles])
+	# الموتيل يحفظ النقود فقط
+	cash = 7000
+	land.open_motel()
+	land._motel_deposit()
+	close_menu()
+	print("AUTOTEST motel: cash=%d motel=%d" % [cash, land.motel_cash])
+	# خريطة المستوطنة واختيار قطعة
+	land.open_map(0)
+	await _frames(2)
+	var mv_ok: bool = hud.menu_list.get_child(0) is Land.MapView
+	land._pick(0, 3)
+	print("AUTOTEST map: view=%s waypoint_set=%s beacon=%s" % [mv_ok, land.waypoint != Vector3.INF, land._beacon.visible])
 	# استئجار قطعة في مستوطنة م1 تملكها عصابة
 	var si := -1
 	var pk := -1
@@ -1365,9 +1391,10 @@ func _land_test(out: String) -> void:
 	await _frames(5)
 	print("AUTOTEST rent: home=%s house=%s tax=%.2f base=%s" % [land.home, sp.house != null, land.tenant_tax(), land.base_title()])
 	# الدخول إلى المنزل مشياً عبر الباب
-	var door_w: Vector3 = sp.house.position + Vector3(sp.sx * (Land.HOUSE.x / 2.0 + 2.5), 0.3, 0)
-	player.teleport(door_w, -sp.sx * PI / 2.0)
-	cam.yaw = -sp.sx * PI / 2.0
+	var door_w: Vector3 = sp.house.transform * Vector3(Land.HOUSE.x / 2.0 + 2.5, 0.3, 0)
+	var in_yaw := atan2(-sp.face.x, -sp.face.z)
+	player.teleport(door_w, in_yaw)
+	cam.yaw = in_yaw
 	await _frames(20)
 	var door_open: float = absf(sp.door.rotation.y)
 	Input.action_press("move_forward")
@@ -1389,13 +1416,40 @@ func _land_test(out: String) -> void:
 			if st2.plots[k].tenant != "" and st2.plots[k] != sp:
 				npc_plot = st2.plots[k]
 	if not npc_plot.is_empty():
-		player.teleport(npc_plot.house.position + Vector3(npc_plot.sx * (Land.HOUSE.x / 2.0 + 2.5), 0.3, 0), -npc_plot.sx * PI / 2.0)
-		cam.yaw = -npc_plot.sx * PI / 2.0
+		var ny := atan2(-npc_plot.face.x, -npc_plot.face.z)
+		player.teleport(npc_plot.house.transform * Vector3(Land.HOUSE.x / 2.0 + 2.5, 0.3, 0), ny)
+		cam.yaw = ny
 		await _frames(10)
 		Input.action_press("move_forward")
 		await _frames(int(1.4 * 60))
 		Input.action_release("move_forward")
 		print("AUTOTEST npc-door: inside=%s dist_from_center=%.1f" % [land._is_inside(npc_plot, player_pos()), Vector2(player_pos().x - npc_plot.pos.x, player_pos().z - npc_plot.pos.z).length()])
+		# الطرد: حق طرد + أجهزة فك شفرة
+		var ev_si := -1
+		var ev_k := -1
+		for i in land.settlements.size():
+			for k in range(1, Land.PLOTS):
+				if land.settlements[i].plots[k] == npc_plot:
+					ev_si = i
+					ev_k = k
+		crime.tools["decoder"] = 10
+		bank += 100000
+		land._buy_eviction()
+		close_menu()
+		var who: String = npc_plot.tenant
+		player.teleport(npc_plot.sign + Vector3(0, 0.3, 0), 0.0)
+		wanted = 0
+		await _frames(2)
+		print("AUTOTEST evict-hint: %s" % _hint)
+		Input.action_press("interact")
+		await _frames(int(8.4 * 60))
+		Input.action_release("interact")
+		await _frames(3)
+		print("AUTOTEST evict: who=%s now=\"%s\" rights=%d decoders=%d cash=%d" % [who, land.settlements[ev_si].plots[ev_k].tenant, land.eviction_rights, crime.tools.get("decoder", 0), cash])
+		for m in gangs.members.duplicate():
+			gangs.remove_robber(m)
+		wanted = 0
+		player.revive()                   # المدافعون ربما أصابوه أثناء الاقتحام
 	# الأمان: نظام + صمامات + إنذار + خزنة
 	land._buy("security", Land.SECURITY_COST)
 	land._buy("fuse", Land.FUSE_COST)
@@ -1433,12 +1487,16 @@ func _land_test(out: String) -> void:
 	land._tax_t = 0.0
 	await _frames(3)
 	var box: int = hst.tax_box
+	land._tax_t = 0.0
+	await _frames(3)
+	var box2: int = hst.tax_box                # يجب ألا يزيد قبل الجمع
 	var b0 := bank
+	var g0 := gangs.members.size()
 	land._collect(hs)
 	close_menu()
+	print("AUTOTEST tax-hold: %d -> %d  hitmen=%d" % [box, box2, gangs.members.size() - g0])
 	print("AUTOTEST settlement: owner=%s home=%s old_plot_free=%s tax_box=%d collected=%d" % [land.owner_text(hst), land.home, sp.tenant == "", box, bank - b0])
-	player.teleport(hst.plots[0].sign + Vector3(hst.plots[0].sx * 10.0, 0.3, 14.0), 0.0)
-	cam.yaw = -hst.plots[0].sx * PI / 2.0 + 0.7
+	player.teleport(hst.plots[0].sign + Vector3(0, 0.3, 0), 0.0)
 	await _frames(30)
 	await _shot(out + "/11_settlement.png")
 	# الحفظ والتحميل
@@ -1449,7 +1507,7 @@ func _land_test(out: String) -> void:
 	# المداهمة الفيدرالية تصادر كل شيء
 	gangs.federal_raid()
 	await _frames(3)
-	print("AUTOTEST federal: home=%s docs=%d titles=%s security=%s owner=%s bank=%d season=%s" % [land.home, land.docs, land.plot_titles, land.security, land.owner_text(hst), bank, gangs.season_mode])
+	print("AUTOTEST federal: home=%s docs=%d titles=%s research=%d motel=%d security=%s owner=%s bank=%d season=%s" % [land.home, land.docs, land.plot_titles, land.researched.size(), land.motel_cash, land.security, land.owner_text(hst), bank, gangs.season_mode])
 
 
 ## لقطات البيئة: أوقات وطقس مختلفة من زاوية ثابتة في الشارع
@@ -1484,15 +1542,16 @@ func _landshots() -> void:
 	var spots := []
 	for st in [mine, other]:
 		var c: Vector3 = st.center
-		var sx: int = st.plots[1].sx
-		spots.append(["%s_aerial" % st.district, c + Vector3(sx * 38.0, 26.0, 30.0), c])
-		spots.append(["%s_street" % st.district, c + Vector3(sx * 33.0, 1.8, -14.0), c + Vector3(sx * 14.0, 2.0, 8.0)])
+		var gd: Vector3 = st.gate_dir
+		var sd := Vector3(-gd.z, 0, gd.x)
+		spots.append(["%s_aerial" % st.district, c + gd * 40.0 + sd * 22.0 + Vector3(0, 34.0, 0), c])
+		spots.append(["%s_gate" % st.district, c + gd * 34.0 + sd * 4.0 + Vector3(0, 1.8, 0), c + gd * 20.0])
+		spots.append(["%s_courtyard" % st.district, c + gd * 10.0 + Vector3(0, 2.0, 0), c - gd * 18.0])
 	var hp: Dictionary = other.plots[2]
-	var hs: int = hp.sx
-	var hc: Vector3 = hp.pos
-	spots.append(["interior_desk", hc + Vector3(hs * 3.8, 1.75, 3.0), hc + Vector3(-hs * 4.0, 0.9, -2.2)])
-	spots.append(["interior_racks", hc + Vector3(hs * 3.6, 1.75, -3.2), hc + Vector3(-hs * 1.5, 1.0, 4.0)])
-	spots.append(["door", hc + Vector3(hs * 9.0, 1.7, 2.5), hc + Vector3(hs * 5.0, 1.3, 0.0)])
+	var ht: Transform3D = hp.house.transform
+	spots.append(["interior_desk", ht * Vector3(2.8, 1.7, 2.6), ht * Vector3(-3.0, 0.9, -1.8)])
+	spots.append(["interior_racks", ht * Vector3(2.8, 1.7, -2.6), ht * Vector3(-0.8, 1.0, 3.0)])
+	spots.append(["door", ht * Vector3(9.0, 1.7, 2.5), ht * Vector3(3.5, 1.3, 0.0)])
 	for spot in spots:
 		for lk in [["noon", 13.0, 0], ["night", 22.0, 0]]:
 			world.hour = lk[1]
@@ -1511,14 +1570,19 @@ func _landshots() -> void:
 	cam.set_process(true)
 	world.hour = 20.0
 	var pl: Dictionary = other.plots[3]
-	player.teleport(pl.sign + Vector3(pl.sx * 1.5, 0.3, 0), -pl.sx * PI / 2.0)
-	cam.yaw = -pl.sx * PI / 2.0 + 0.6
+	var fy := atan2(-pl.face.x, -pl.face.z)
+	player.teleport(pl.sign + pl.face * 1.5 + Vector3(0, 0.3, 0), fy)
+	cam.yaw = fy + 0.5
 	land.plot_titles[other.level] = 1
 	land.home = Vector2i(-1, -1)
 	for i in 120:
 		_update_camera_for_shot()
 		await get_tree().process_frame
 	await _shot("%s/hud_sign.png" % out)
+	land.open_map(4)
+	for i in 30:
+		await get_tree().process_frame
+	await _shot("%s/settle_map.png" % out)
 	get_tree().quit()
 
 

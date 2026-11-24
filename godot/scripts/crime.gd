@@ -17,6 +17,7 @@ const TOOLS := {
 	"cutter": {"name": "قاطع زجاج ماسي", "price": 12000, "desc": "لمعروضات المعرض الفني"},
 	"jammer": {"name": "جهاز تشويش", "price": 22000, "desc": "يعطّل إنذار سيارة المعرض"},
 	"bank_card": {"name": "بطاقة أمن البنك", "barter": {"deposit_key": 8}, "desc": "مطلوبة لخزنة الذهب"},
+	"decoder": {"name": "جهاز فك شفرة", "barter": {"deposit_key": 2}, "desc": "لاقتحام القواعد (لا يُباع، يُقايَض)"},
 	"armory_card": {"name": "بطاقة مستودع الشرطة", "barter": {"deposit_key": 4, "gold": 1}, "desc": "مطلوبة لمستودع أسلحة الشرطة"},
 }
 
