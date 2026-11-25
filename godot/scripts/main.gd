@@ -49,6 +49,7 @@ var no_save := false
 var net: Net
 var alerts: Array = []          # بلاغات للشرطة على الخريطة [موقع، وقت]
 var _bot := ""
+var _bot_out := "user://"
 var _bot_t := 0.0
 var weapons: Weapons
 var civilians: Array[Civilian] = []
@@ -155,10 +156,19 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	if "--server" in args:
 		_start_dedicated(args)
+	elif "--host" in args:                          # مضيف مرسوم (خادم ولاعب في عملية واحدة) — للّقطات التوضيحية
+		_bot = _arg(args, "--bot")
+		_bot_out = _arg(args, "--out", "user://")
+		net.allow_test_grants = "--allow-test-grants" in args
+		if _arg(args, "--quality") != "":
+			quality = int(_arg(args, "--quality"))
+			_apply_quality()
+		start_host(_arg(args, "--name", "لاعب"), _arg(args, "--role", "criminal"), int(_arg(args, "--port", str(Net.PORT))))
 	elif _arg(args, "--join") != "":
 		net.my_name = _arg(args, "--name", "لاعب")
 		net.my_role = _arg(args, "--role", "criminal")
 		_bot = _arg(args, "--bot")
+		_bot_out = _arg(args, "--out", "user://")
 		if _arg(args, "--years") != "":
 			GameState.profile.jail_years = int(_arg(args, "--years"))   # نفوذ تجريبي يُعلن للخادم
 		net.log_events = true
@@ -484,6 +494,8 @@ func _bot_tick(dt: float) -> void:
 		_econ_bot(dt)
 	elif _bot == "shop":
 		_shop_bot(dt)
+	elif _bot == "showcase":
+		_showcase_bot(dt)
 	elif _bot == "fed" or _bot == "rich":
 		if _bot_t > 3.0 and _bot_t - dt <= 3.0:
 			print("BOT %s: server perm years=%d authority=%d bank=%d" % [_bot, int(GameState.profile.jail_years), PrisonManager.authority_level(), bank])
@@ -583,6 +595,48 @@ func _shop_bot(dt: float) -> void:
 			net.shot(player.global_position + Vector3(0, 1.4 + i * 0.01, 0), Vector3.FORWARD, 30.0, 10.0)
 	if at.call(15.0):
 		print("BOT shop: after 40 shots " + inv_txt.call())
+
+
+## لقطات توضيحية لمخزون الخادم (لاعب مرسوم يتعامل مع خادم مخصص)
+func _showcase_bot(dt: float) -> void:
+	var at := func(t: float) -> bool: return _bot_t > t and _bot_t - dt <= t
+	var snap := func(n: String) -> void: _shot(_bot_out + "/" + n + ".png")
+	if at.call(2.0):
+		net.req_test_grant("bank", 300000)
+		player.teleport(crime.dealer_pos + Vector3(1.5, 0.3, 1.5), 0.0)
+	if at.call(5.0):
+		crime.open_market()
+	if at.call(6.0):
+		snap.call("1_market_before")
+	if at.call(7.0):
+		crime._buy("minidrill")
+		crime._buy_weapon("shotgun")
+	if at.call(10.0):
+		snap.call("2_market_after_server_buy")
+	if at.call(11.0):
+		crime._barter("decoder")                 # بلا مفاتيح ودائع ← رفض الخادم
+	if at.call(12.0):
+		snap.call("3_server_rejects_barter")
+	if at.call(13.0):
+		close_menu()
+		GameState.inventory["drill"] = 5        # غش محلي
+		weapons.owned.append("smg")
+		weapons.current = "smg"
+	if at.call(13.6):
+		snap.call("4_local_cheat_smg")
+	if at.call(19.0):
+		snap.call("5_after_server_sync")
+	if at.call(20.0):
+		land.house._place("cabinet")
+		land.house.open_plan()
+	if at.call(23.0):
+		snap.call("6_house_plan_from_server")
+	if at.call(24.0):
+		close_menu()
+		crime.bag.append({"name": "ماسة مزيفة", "value": 999990, "kind": "jewel"})
+	if at.call(26.5):
+		snap.call("7_fake_item_rejected")
+		print("BOT showcase: done")
 
 
 func _heister_bot(dt: float) -> void:
