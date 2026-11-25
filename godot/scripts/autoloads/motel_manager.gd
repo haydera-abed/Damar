@@ -16,6 +16,8 @@ signal quest_completed(quest_id: String, reward_cash: int)
 signal shipment_ordered(shipment_id: String, eta_unix: int)
 signal shipment_delivered(shipment_id: String, contents: Dictionary)
 signal roulette_result(number: int, color: String, bet: int, payout: int)
+var net_spin: Callable                 # يُضبط في اللعب الجماعي
+var quest_cash_enabled := true         # مكافآت المهام النقدية لا يتحقق منها الخادم بعد ← معطلة أونلاين
 signal motel_error(reason: String)
 
 const OWNER_NAME := "رفيق"
@@ -138,7 +140,8 @@ func report(objective: int, amount: int) -> void:
 		quest_progress.emit(qid, mini(progress[qid], q.target_amount), q.target_amount)
 		if progress[qid] >= q.target_amount:
 			done[qid] = true
-			EconomyManager.add_dirty(q.reward_cash)
+			if quest_cash_enabled:
+				EconomyManager.add_dirty(q.reward_cash)
 			for k in q.reward_items:
 				GameState.add_item(k, int(q.reward_items[k]))
 			quest_completed.emit(qid, q.reward_cash)
@@ -198,6 +201,9 @@ func bet_cap() -> int:
 
 ## kind: "red" | "black" | "even" | "odd" | "number" (مع number 0..36)
 func spin(amount: int, kind: String, number := -1) -> int:
+	if net_spin.is_valid():                        # اللعب الجماعي: الخادم يدير العجلة ويحسم الرهان
+		net_spin.call(amount, kind, number)
+		return 0
 	if TravelManager.current_hub != TravelManager.Hub.MOTEL:
 		motel_error.emit("الروليت في الموتيل فقط")
 		return -1

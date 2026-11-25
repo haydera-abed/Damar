@@ -666,8 +666,12 @@ func open_roulette() -> void:
 
 func _motel_launder() -> void:
 	var amt := mini(game.cash, 100000)
+	if game.net.is_online():
+		game.net.req_motel(0, true)
+	EconomyManager.mute += 1
 	game.cash -= amt
 	game.bank += amt / 2
+	EconomyManager.mute -= 1
 	game.hud.toast("غسلت %s عند رفيق → %s في البنك" % [Cfg.money(amt), Cfg.money(amt / 2)], Color("7dff9e"))
 	game.check_win()
 	game.save_game()
@@ -675,13 +679,19 @@ func _motel_launder() -> void:
 
 
 func _motel_deposit() -> void:
+	if game.net.is_online():
+		game.net.req_motel(game.cash)
+	EconomyManager.mute += 1
 	motel_cash += game.cash
 	game.cash = 0
+	EconomyManager.mute -= 1
 	game.save_game()
 	open_motel()
 
 
 func _motel_take() -> void:
+	if game.net.is_online():
+		game.net.req_motel(-motel_cash)
 	game.cash += motel_cash
 	motel_cash = 0
 	game.save_game()
@@ -876,6 +886,8 @@ func _do_evict(si: int, k: int, need: int) -> void:
 	game.crime.tools["decoder"] = game.crime.tools.get("decoder", 0) - need
 	var loot: int = randi_range(5000, 20000) * int(s.level)
 	game.cash += loot
+	if game.net.is_online():
+		game.net.req_income("evict", loot)
 	if game.net.is_online() and not NPC_NAMES.has(who):
 		game.net.land_request("evict", si, k)
 	else:
@@ -962,6 +974,8 @@ func _make_home(si: int) -> void:
 func _collect(si: int) -> void:
 	var s: Dictionary = settlements[si]
 	game.bank += s.tax_box
+	if game.net.is_online():
+		game.net.req_income("settle_tax", s.tax_box)
 	game.hud.toast("💰 جمعت %s ضرائب من %s" % [Cfg.money(s.tax_box), s.name], Color("7dff9e"))
 	s.tax_box = 0
 	game.sfx.cash()

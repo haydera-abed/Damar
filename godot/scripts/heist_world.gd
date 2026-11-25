@@ -239,6 +239,8 @@ func _on_extracted(items: Dictionary, value: int) -> void:
 			continue
 		var n: int = GameState.item_count(k)
 		GameState.remove_item(k, n)
+		if game.net.is_online():
+			continue                               # الخادم أضافها لدفترك وسيرسل الحقيبة
 		for i in n:
 			var kind: String = {"gold_bar": "gold", "cargo": "cargo", "deposit_key": "deposit_key"}.get(k, "heist")
 			game.crime.bag.append({"name": ItemDB.item_name(k), "value": ItemDB.value(k), "kind": kind})

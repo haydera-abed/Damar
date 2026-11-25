@@ -285,8 +285,12 @@ func open_desk() -> void:
 
 
 func _deposit(amt: int) -> void:
+	if game.net.is_online():
+		game.net.req_deposit(amt)
+	EconomyManager.mute += 1
 	game.crime.launder_pool += amt
 	game.cash -= amt
+	EconomyManager.mute -= 1
 	game.save_game()
 	open_desk()
 

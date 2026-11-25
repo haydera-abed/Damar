@@ -142,7 +142,10 @@ godot --headless --path godot res://scenes/tests/core_persist.tscn -- --core-per
   السجن الفيدرالي والنفوذ في الجماعي يحسمهما الخادم (`net._sentence`, `federal_raid_all`) مستخدماً
   `PrisonManager.years_for` و`level_for_years` و`rewards_between`؛ الملف الدائم في قسم `permanent` من ملف الخادم،
   ويُطبَّق محلياً بـ `_apply_perm` ثم `game.on_net_sentenced`.
-  ما زال: الاقتصاد في الجماعي يحفظه الخادم في ملف اللاعب كما كان (ليس عبر طبقة المنطق).
+  الاقتصاد في الجماعي: دفتر الخادم (`net.ledger`, قسم `ledger`) هو مصدر الحقيقة. العميل يطبّقه بـ `game.apply_ledger`
+  تحت `EconomyManager.mute` (بلا إبلاغ)، وكل نقص آخر في `add_dirty`/`add_bank` يمر عبر `EconomyManager.outflow_hook`
+  ← `net.req_spend`. الروليت عبر `MotelManager.net_spin` ← `net.req_roulette`. الغسيل المحلي معطل أونلاين
+  (`rate_override_per_sec = 0`) ويجري على الخادم في `_launder_ledgers`.
 - سرقات المتاجر القديمة (`crime.gd`: الخزائن، المعرض، مستودع الشرطة…) ما زالت نظامها الخاص بجانب أهداف مدينة السطو.
 
 ## اختبارات إضافية

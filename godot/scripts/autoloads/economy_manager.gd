@@ -38,14 +38,35 @@ func _process(dt: float) -> void:
 
 
 # ---------------------------------------------------------------- الكاش والبنك
+## في اللعب الجماعي: كل نقص في المال (شراء) يُبلَّغ للخادم ليخصمه من دفتره. mute يمنع ذلك
+## عند تطبيق أرقام الخادم نفسها أو عند تحويلات يحسمها الخادم بطلب خاص (إيداع، خزنة، روليت)
+var outflow_hook: Callable
+var mute := 0
+
+
+func muted(f: Callable) -> void:
+	mute += 1
+	f.call()
+	mute -= 1
+
+
 func add_dirty(amount: int) -> void:
+	var before := dirty_cash
 	dirty_cash = maxi(0, dirty_cash + amount)
+	_outflow(before - dirty_cash)
 	dirty_cash_changed.emit(dirty_cash)
 
 
 func add_bank(amount: int) -> void:
+	var before := bank_balance
 	bank_balance = maxi(0, bank_balance + amount)
+	_outflow(before - bank_balance)
 	bank_changed.emit(bank_balance)
+
+
+func _outflow(spent: int) -> void:
+	if spent > 0 and mute == 0 and outflow_hook.is_valid():
+		outflow_hook.call(spent)
 
 
 ## تعيين مباشر لمحتوى الطاولة (للربط): يُحسب ما غُسل حتى الآن أولاً حتى لا يُحتسب وقت قديم

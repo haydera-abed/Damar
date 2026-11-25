@@ -197,6 +197,7 @@ func _start_dedicated(args: PackedStringArray) -> void:
 		get_tree().quit(1)
 		return
 	_go_online()
+	net.allow_test_grants = args.has("--allow-test-grants")   # للاختبار فقط: الروبوتات تطلب مالاً من الخادم
 	if _arg(args, "--raid-in") != "":                # للاختبار: المداهمة الأسبوعية بعد N ثانية
 		net.season_start = int(Time.get_unix_time_from_system()) - Balance.WIPE_PERIOD_SEC + int(_arg(args, "--raid-in"))
 	state = "server"
@@ -236,6 +237,13 @@ func _go_online() -> void:
 	GameState.persistence = false          # في اللعب الجماعي الخادم يحفظ التقدم؛ لا نخلطه بالحفظ الفردي
 	core_owned = false                     # ملف اللاعب من الخادم يُطبَّق كاملاً
 	land.mp_apply(net.settle_owner, net.plot_tenant)
+	# المال يحسمه دفتر الخادم: كل دفع يُبلَّغ، والروليت تدور على الخادم، ولا غسيل محلي
+	EconomyManager.outflow_hook = func(amount: int) -> void:
+		if net.is_online():
+			net.req_spend(amount)
+	MotelManager.net_spin = func(amount: int, kind: String, number: int) -> void:
+		net.req_roulette(amount, kind, number)
+	MotelManager.quest_cash_enabled = false
 	for c in _police():
 		_remove_car(c)
 	for o in officers.duplicate():
@@ -251,9 +259,11 @@ func on_net_joined(profile: Dictionary, note: String) -> void:
 	else:
 		# لاعب جديد على هذا الخادم (أو بعد حكم فيدرالي): بداية نظيفة — لا نحمل مال اللعب الفردي إلى الخادم
 		var sid: String = GameState.state.id if GameState.state else GameState.DEFAULT_STATE
+		EconomyManager.mute += 1
 		GameState.wipe_state("new_online")
 		GameState.start_state(sid)
 		_apply_profile({"bank": 0, "cash": 0})
+		EconomyManager.mute -= 1
 		_new_save = true
 	_on_start()
 	if net.my_role == "cop":
@@ -276,6 +286,7 @@ func _profile() -> Dictionary:
 
 
 func _apply_profile(d: Dictionary) -> void:
+	EconomyManager.mute += 1
 	bank = d.get("bank", 0)
 	won_shown = bank >= Cfg.GOAL
 	cash = d.get("cash", 0)
@@ -283,6 +294,49 @@ func _apply_profile(d: Dictionary) -> void:
 	weapons.from_dict(d.get("weapons", {}))
 	cop.from_dict(d.get("cop", {}))
 	land.from_dict(d.get("land", {}))
+	EconomyManager.mute -= 1
+
+
+## أرقام دفتر الخادم (اللعب الجماعي): تُطبَّق كما هي بلا إبلاغ «دفع»
+func apply_ledger(view: Dictionary) -> void:
+	EconomyManager.mute += 1
+	bank = int(view.get("bank", bank))
+	cash = int(view.get("cash", cash))
+	crime.launder_pool = float(view.get("pool", crime.launder_pool))
+	land.motel_cash = int(view.get("motel", land.motel_cash))
+	crime.bag.assign(view.get("bag", crime.bag).duplicate(true))
+	crime.notoriety_xp = int(view.get("xp", crime.notoriety_xp))
+	crime.launder_level = int(view.get("lvl", crime.launder_level))
+	EconomyManager.mute -= 1
+	ledger_synced += 1
+
+
+var ledger_synced := 0
+var _bag_diff_t := 0.0
+
+
+## في اللعب الجماعي: ما تغيّر في الحقيبة محلياً (تخزين، مقايضة، حصاد) يُرسل للخادم ليقبله أو يرفضه
+func _bag_diff_tick(dt: float) -> void:
+	_bag_diff_t -= dt
+	if _bag_diff_t > 0.0 or net == null or not net.is_online() or state == "server" or ledger_synced == 0:
+		return
+	_bag_diff_t = 1.0
+	var server: Array = net.server_bag.duplicate()
+	var added: Array = []
+	for it in crime.bag:
+		var j := -1
+		for k in server.size():
+			if server[k].get("kind", "") == it.get("kind", "") and int(server[k].get("value", 0)) == int(it.get("value", 0)) and server[k].get("name", "") == it.get("name", ""):
+				j = k
+				break
+		if j >= 0:
+			server.remove_at(j)
+		else:
+			added.append(it)
+	if server.is_empty() and added.is_empty():
+		return
+	net.req_bag_diff(server, added)
+	net.server_bag = crime.bag.duplicate(true)
 
 
 func local_net_state() -> Array:
@@ -364,18 +418,19 @@ func _bot_tick(dt: float) -> void:
 			land._rent(0, 1)
 		if _bot_t > 10.0 and _bot_t - dt <= 10.0:
 			print("BOT tenant: home=%s tax=%.2f" % [land.home, land.tenant_tax()])
-			crime.launder_pool = 40000.0
+			net.req_test_grant("pool", 40000)
 		if _bot_t > 20.0 and _bot_t - dt <= 20.0:
 			print("BOT tenant: pool=%.0f bank=%d" % [crime.launder_pool, bank])
 		if _bot_t > 27.0 and _bot_t - dt <= 27.0:
 			print("BOT tenant: after eviction home=%s alerts=%d" % [land.home, alerts.size()])
 	elif _bot == "heister":
 		_heister_bot(dt)
+	elif _bot == "econ":
+		_econ_bot(dt)
 	elif _bot == "fed" or _bot == "rich":
 		if _bot_t > 3.0 and _bot_t - dt <= 3.0:
 			print("BOT %s: server perm years=%d authority=%d bank=%d" % [_bot, int(GameState.profile.jail_years), PrisonManager.authority_level(), bank])
-			bank = 2100000
-			save_game()
+			net.req_test_grant("bank", 2100000)
 		if _bot == "fed" and _bot_t > 4.0 and _bot_t - dt <= 4.0:
 			surrender_feds()
 			net.surrender_feds.call_deferred()
@@ -404,6 +459,45 @@ func _bot_tick(dt: float) -> void:
 					net.request_arrest(id)
 					print("BOT cop: arrest requested on %s, bank=%d" % [rp.pname, bank])
 					_bot_t = -1000.0
+
+
+## روبوت الاقتصاد: يتحقق أن الخادم يحسم المال (غسيل، غنائم، بيع، رفض الغش، روليت)
+func _econ_bot(dt: float) -> void:
+	var at := func(t: float) -> bool: return _bot_t > t and _bot_t - dt <= t
+	var shop: Crime.Target = crime.targets[0]
+	if at.call(2.0):
+		print("BOT econ: start cash=%d bank=%d pool=%.0f synced=%d" % [cash, bank, crime.launder_pool, ledger_synced])
+		crime._deposit_launder()
+		close_menu()
+	if at.call(6.0):
+		print("BOT econ: after launder cash=%d bank=%d pool=%.0f" % [cash, bank, crime.launder_pool])
+		EconomyManager.muted(func(): cash += 5000000)   # غش: مال محلي لا يعرفه الخادم
+		cash -= 4000000                                  # «شراء» بمال مزيّف ← يجب أن يرفضه الخادم
+	if at.call(8.0):
+		print("BOT econ: after cheat cash=%d bank=%d" % [cash, bank])
+		crime.bag.append({"name": "ماسة مزيفة", "value": 999990, "kind": "jewel"})
+	if at.call(10.0):
+		print("BOT econ: after fake item bag=%d value=%d" % [crime.bag.size(), crime.bag_value()])
+		crime.toggle_mask()
+		player.teleport(shop.pos + Vector3(0, 0.3, 0), 0.0)
+	if _bot_t > 10.5 and _bot_t < 19.0:
+		Input.action_press("interact")
+	if at.call(19.0):
+		Input.action_release("interact")
+		print("BOT econ: robbed bag=%d value=%d" % [crime.bag.size(), crime.bag_value()])
+		player.teleport(crime.fences[0] + Vector3(2.0, 0.3, 0), 0.0)
+	if at.call(21.0):
+		crime._sell_bag()
+	if at.call(23.0):
+		print("BOT econ: sold cash=%d bag=%d xp=%d" % [cash, crime.bag.size(), crime.notoriety_xp])
+		player.teleport(city.safe_pos + Vector3(0, 0.3, 0), 0.0)
+	if at.call(24.0):
+		MotelManager.spin(1000, "red")
+	if at.call(25.0):
+		print("BOT econ: after roulette cash=%d" % cash)
+		net.req_income("npc_arrest", 9999999)          # دخل مبالغ فيه ← يُقصّ إلى الحد
+	if at.call(27.0):
+		print("BOT econ: final cash=%d bank=%d pool=%.0f" % [cash, bank, crime.launder_pool])
 
 
 func _heister_bot(dt: float) -> void:
@@ -823,7 +917,7 @@ func _bust() -> void:
 		lines.append("صودر سلاحك: " + Weapons.CATALOG[weapons.current].name)
 		weapons.drop_current()
 	lines.append("الحساب البنكي وطاولة الغسيل بأمان.")
-	cash = 0
+	EconomyManager.muted(func(): cash = 0)     # المصادرة ليست «دفعاً»؛ في الجماعي يصفّرها الخادم بنفسه
 	_wanted_at_bust = maxi(wanted, 1)
 	jail_t = 15.0 * _wanted_at_bust * (0.5 if surrendered else 1.0)
 	_arrested_by_surrender = surrendered
@@ -1205,7 +1299,7 @@ func _interactions(dt: float) -> void:
 	hint = cop.interact_station(dt)
 	if hint == "":
 		hint = gangs.interact(dt)
-	if hint == "":
+	if hint == "" and not crime.on_target(p):      # الوقوف على هدف سرقة عادي له الأولوية على نقطة السطو القريبة
 		hint = heist.interact(dt)
 	if hint == "":
 		hint = land.interact(dt)
@@ -1376,6 +1470,7 @@ func _process(dt: float) -> void:
 	if Input.is_action_just_pressed("horn") and state == "play":
 		sfx.horn()
 
+	_bag_diff_tick(dt)
 	if state == "busted" and jail_t > 0.0:
 		jail_t = maxf(0.0, jail_t - dt)
 		hud.update_jail(jail_t, bank)

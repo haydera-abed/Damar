@@ -208,6 +208,8 @@ func _arrest(r: Robber) -> void:
 		pay = int(pay * 1.2)
 	pay += int(r.loot * 0.25)          # نسبة من الغنائم المصادرة
 	game.bank += pay
+	if game.net.is_online():
+		game.net.req_income("npc_arrest", pay)
 	shift_pay += pay
 	shift_arrests += 1
 	total_arrests += 1
@@ -225,6 +227,8 @@ func on_robbery_started(r: Robber) -> void:
 func on_robber_down(r: Robber, from: Node) -> void:
 	if from == game.player:
 		game.bank += 2000
+		if game.net.is_online():
+			game.net.req_income("npc_down", 2000)
 		shift_pay += 2000
 		game.hud.toast("تم تحييد لص (+$2,000) — الاعتقال يدفع أكثر", Color("ffd36b"))
 

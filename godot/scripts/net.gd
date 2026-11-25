@@ -40,6 +40,16 @@ var heist_bags := {}                                            # peer -> {item:
 var season_start := 0                                           # بداية الموسم (المداهمة بعد 7 أيام حقيقية)
 var _sentence_lock := {}                                        # اسم -> وقت؛ نتجاهل حفظاً قديماً يصل بعد الحكم
 var _raid_check := 0.0
+# دفتر الاقتصاد (الخادم مصدر الحقيقة للمال في اللعب الجماعي)
+const START_CASH := 2000
+const CLAIM_CAP_PER_HOUR := 60000           # سقف ما يُقبل من «إنتاج المنزل» (حصاد، شحنات) غير القابل للتحقق
+const CLAIMABLE := ["weed", "cargo", "goods", "gold", "heist"]
+var ledger := {}                            # الاسم -> {bank, cash, pool, motel, bag, stash, xp, lvl, claims, t}
+var rob_active := {}                        # peer -> {idx, t0}
+var _ledger_dirty := {}
+var _ledger_t := 0.0
+var _ledger_full := 0
+var server_bag: Array = []                  # (عند العميل) آخر حقيبة أرسلها الخادم — للمقارنة
 var _send_t := 0.0
 var _snap_t := 0.0
 var _tax_t := 120.0
@@ -87,6 +97,7 @@ func host(port := PORT, dedicated := false) -> String:
 		var perm := _perm(my_name)
 		peers[1] = {"name": my_name, "role": my_role, "auth": PrisonManager.level_for_years(perm.jail_years), "years": perm.jail_years}
 		_apply_perm(perm)
+		_ledger_of(my_name)
 		wanted[1] = {"level": 0, "unseen": 0.0}
 	_log("listening on port %d" % port)
 	return ""
@@ -105,6 +116,10 @@ func join(ip: String, port := PORT) -> String:
 
 
 func leave() -> void:
+	EconomyManager.outflow_hook = Callable()
+	MotelManager.net_spin = Callable()
+	MotelManager.quest_cash_enabled = true
+	game.ledger_synced = 0
 	if game.heist:
 		game.heist.detach_net()
 	if multiplayer.multiplayer_peer:
@@ -206,6 +221,8 @@ func register(pname: String, role: String, info: Dictionary = {}) -> void:
 	var shared := _shared_state()
 	shared["perm"] = perm
 	welcome.rpc_id(id, id, pname, role, peers, profile, shared, note)
+	_ledger_of(pname)
+	_sync_ledger(id)
 	peer_joined.rpc(id, pname, role, peers[id].auth)
 	if mode == Mode.HOST:
 		_spawn_remote(id)
@@ -333,6 +350,22 @@ func _apply_snapshot(data: Dictionary) -> void:
 
 ## الخادم: تناقص المطلوبية عندما لا يرى أي شرطي (لاعب) المجرمَ، والضرائب
 func _server_tick(dt: float) -> void:
+	_ledger_t -= dt
+	if _ledger_t <= 0.0:
+		_ledger_t = 1.0
+		_ledger_full -= 1
+		if _ledger_full <= 0:                  # مزامنة كاملة دورية: تمحو أي دخل محلي لم يعتمده الخادم
+			_ledger_full = 5
+			for pid in peers:
+				_ledger_dirty[peers[pid].name] = true
+		_launder_ledgers()
+		for n in _ledger_dirty:
+			var pid := _peer_by_name(n)
+			if pid != 0:
+				_sync_ledger(pid)
+		if not _ledger_dirty.is_empty():
+			_save_ledgers()
+		_ledger_dirty = {}
 	_raid_check -= dt
 	if _raid_check <= 0.0:
 		_raid_check = 2.0
@@ -365,6 +398,9 @@ func _server_tick(dt: float) -> void:
 				if district_owner[i] == peers[id].name:
 					n += 3 if i == Gangs.CENTER else 1
 			if n > 0:
+				var lt := _ledger_of(peers[id].name)
+				lt.pool = float(lt.pool) + 1500 * n
+				_ledger_dirty[peers[id].name] = true
 				_send_tax(id, 1500 * n)
 
 
@@ -417,6 +453,7 @@ func _req_rob(idx: int, city_alert: bool) -> void:
 
 func _rob_start(id: int, idx: int, city_alert: bool) -> void:
 	var t: Crime.Target = game.crime.targets[idx]
+	rob_active[id] = {"idx": idx, "t0": Time.get_ticks_msec()}
 	_log("%s started robbing %s" % [peers.get(id, {}).get("name", "?"), t.label])
 	var where: Vector3 = t.pos
 	alarm.rpc(idx, peers.get(id, {}).get("name", "?"), city_alert, where)
@@ -569,6 +606,13 @@ func _do_arrest(cop: int, target: int) -> void:
 	reward += int(ts[7] * 0.25)
 	var cop_name: String = peers[cop].name
 	wanted[target].level = 0
+	var lv := _ledger_of(peers[target].name)          # الشرطة تصادر الكاش والحقيبة
+	lv.cash = 0
+	lv.bag = []
+	_ledger_dirty[peers[target].name] = true
+	var lc := _ledger_of(cop_name)
+	lc.bank = int(lc.bank) + reward
+	_ledger_dirty[cop_name] = true
 	heist_active.erase(target)
 	if ts[3] & F_MASK != 0 and heist_bags.has(target):
 		_log("heist bag of %s lost on arrest" % peers[target].name)
@@ -754,7 +798,11 @@ func _req_land_tax(owner_name: String, amount: int) -> void:
 		_route_land_tax(owner_name, amount, peers.get(multiplayer.get_remote_sender_id(), {}).get("name", ""))
 
 
-func _route_land_tax(owner_name: String, amount: int, from: String) -> void:
+func _route_land_tax(_owner_name: String, _amount: int, _from: String) -> void:
+	return                                     # صار الخادم يحسب ضريبة الساكن من غسيله في الدفتر (_launder_ledgers)
+
+
+func _route_land_tax_old(owner_name: String, amount: int, from: String) -> void:
 	for pid in peers:
 		if peers[pid].name == owner_name:
 			if pid == my_id():
@@ -774,6 +822,508 @@ func land_rent(amount: int, _from: String) -> void:
 	if _rent_acc >= 1000:
 		game.hud.toast("🏛 ضرائب سكان مستوطنتك: +%s" % Cfg.money(_rent_acc), Color("7dff9e"))
 		_rent_acc = 0
+
+
+# ---------------------------------------------------------------- دفتر الاقتصاد (الخادم يحسم المال)
+func _fresh_ledger() -> Dictionary:
+	return {"bank": 0, "cash": START_CASH, "pool": 0.0, "motel": 0, "bag": [], "stash": [], "xp": 0, "lvl": 1, "claims": [], "t": int(Time.get_unix_time_from_system())}
+
+
+func _ledger_of(pname: String) -> Dictionary:
+	if ledger.has(pname):
+		return ledger[pname]
+	var l: Dictionary = _profiles.get_value("ledger", pname, {})
+	if l.is_empty():
+		# ترحيل لمرة واحدة من ملف اللاعب القديم على الخادم، أو بداية جديدة
+		var prof: Dictionary = _profiles.get_value("players", pname, {})
+		l = _fresh_ledger()
+		if not prof.is_empty():
+			var cr: Dictionary = prof.get("crime", {})
+			l.bank = int(prof.get("bank", 0))
+			l.cash = int(prof.get("cash", 0))
+			l.pool = float(cr.get("pool", 0.0))
+			l.bag = cr.get("bag", [])
+			l.xp = int(cr.get("notoriety", 0))
+			l.lvl = int(cr.get("launder_level", 1))
+			l.motel = int(prof.get("land", {}).get("motel", 0))
+	var fresh := _fresh_ledger()
+	for k in fresh:
+		if not l.has(k):
+			l[k] = fresh[k]
+	ledger[pname] = l
+	return l
+
+
+func _peer_by_name(pname: String) -> int:
+	for id in peers:
+		if peers[id].name == pname:
+			return id
+	return 0
+
+
+func _sync_ledger(id: int) -> void:
+	if not peers.has(id):
+		return
+	var l := _ledger_of(peers[id].name)
+	var view := {"bank": int(l.bank), "cash": int(l.cash), "pool": float(l.pool), "motel": int(l.motel), "bag": l.bag, "xp": int(l.xp), "lvl": int(l.lvl)}
+	_send(id, "ledger_sync", [view])
+
+
+func _save_ledgers() -> void:
+	for n in ledger:
+		_profiles.set_value("ledger", n, ledger[n])
+	_profiles.save(PROFILE_PATH)
+
+
+## الغسيل على الخادم بالوقت الحقيقي (للاعب غير المتصل يُحسب ما فاته عند تحميل دفتره)
+func _launder_ledgers() -> void:
+	var now := int(Time.get_unix_time_from_system())
+	for n in ledger.keys():
+		var l: Dictionary = ledger[n]
+		var elapsed := maxi(0, now - int(l.t))
+		l.t = now
+		if float(l.pool) <= 0.0 or elapsed == 0:
+			continue
+		var amount := minf(float(l.pool), _launder_rate(n, l) * elapsed)
+		l.pool = float(l.pool) - amount
+		var tax := 0.0
+		var landlord := _landlord_of(n)
+		if landlord != "":
+			tax = amount * _tenant_tax_rate(n)
+			var lo := _ledger_of(landlord)
+			lo.bank = int(lo.bank) + int(tax)
+			_ledger_dirty[landlord] = true
+			if landlord == my_name:
+				rent_total += int(tax)
+			else:
+				var lid := _peer_by_name(landlord)
+				if lid != 0:
+					_send(lid, "rent_received", [int(tax)])
+		l.bank = int(l.bank) + int(round(amount - tax))
+		_ledger_dirty[n] = true
+
+
+@rpc("authority", "reliable")
+func rent_received(amount: int) -> void:
+	rent_total += amount
+	_rent_acc += amount
+	if _rent_acc >= 1000:
+		game.hud.toast("🏛 ضرائب سكان مستوطنتك: +%s" % Cfg.money(_rent_acc), Color("7dff9e"))
+		_rent_acc = 0
+
+
+func _launder_rate(pname: String, l: Dictionary) -> float:
+	var bonus := 0.0
+	for i in 9:
+		if district_owner[i] == pname:
+			bonus += Gangs.LAUNDER_BONUS[Gangs.LEVEL[i]]
+	return Crime.LAUNDER_BASE_RATE * clampi(int(l.lvl), 1, 4) * (1.0 + bonus)
+
+
+## مالك المستوطنة التي يسكنها اللاعب (إن كان لاعباً آخر)
+func _landlord_of(pname: String) -> String:
+	for key in plot_tenant:
+		if plot_tenant[key] == pname:
+			var si := int((key as String).split(":")[0])
+			var owner: String = settle_owner[si]
+			return owner if owner != pname else ""
+	return ""
+
+
+func _tenant_tax_rate(pname: String) -> float:
+	for key in plot_tenant:
+		if plot_tenant[key] == pname:
+			var si := int((key as String).split(":")[0])
+			return Land.TENANT_TAX[game.land.settlements[si].level]
+	return 0.0
+
+
+## الدفع: يُخصم من الكاش ثم البنك؛ يُرفض إن لم يكفِ
+func req_spend(amount: int) -> void:
+	if amount <= 0:
+		return
+	if is_server():
+		_spend(my_id(), amount)
+	else:
+		_req_spend.rpc_id(1, amount)
+
+
+@rpc("any_peer", "reliable")
+func _req_spend(amount: int) -> void:
+	if is_server():
+		_spend(multiplayer.get_remote_sender_id(), amount)
+
+
+func _spend(id: int, amount: int) -> void:
+	if not peers.has(id):
+		return
+	var l := _ledger_of(peers[id].name)
+	if int(l.cash) + int(l.bank) < amount:
+		_log("rejected spend %d by %s (has %d)" % [amount, peers[id].name, int(l.cash) + int(l.bank)])
+		_send(id, "ledger_note", ["الخادم رفض الدفع: رصيدك لا يكفي"])
+	else:
+		var from_cash := mini(int(l.cash), amount)
+		l.cash = int(l.cash) - from_cash
+		l.bank = int(l.bank) - (amount - from_cash)
+	_ledger_dirty[peers[id].name] = true
+
+
+func req_deposit(amount := -1) -> void:
+	if is_server():
+		_deposit(my_id(), amount)
+	else:
+		_req_deposit.rpc_id(1, amount)
+
+
+@rpc("any_peer", "reliable")
+func _req_deposit(amount: int) -> void:
+	if is_server():
+		_deposit(multiplayer.get_remote_sender_id(), amount)
+
+
+func _deposit(id: int, amount: int) -> void:
+	if not peers.has(id) or wanted.get(id, {"level": 0}).level > 0:
+		return
+	var l := _ledger_of(peers[id].name)
+	var a := int(l.cash) if amount < 0 else mini(amount, int(l.cash))
+	l.cash = int(l.cash) - a
+	l.pool = float(l.pool) + a
+	l.t = int(Time.get_unix_time_from_system())
+	_ledger_dirty[peers[id].name] = true
+
+
+## خزنة الموتيل: amount موجب = إيداع، سالب = سحب. half_launder = غسيل رفيق بنصف القيمة
+func req_motel(amount: int, half_launder := false) -> void:
+	if is_server():
+		_motel(my_id(), amount, half_launder)
+	else:
+		_req_motel.rpc_id(1, amount, half_launder)
+
+
+@rpc("any_peer", "reliable")
+func _req_motel(amount: int, half_launder: bool) -> void:
+	if is_server():
+		_motel(multiplayer.get_remote_sender_id(), amount, half_launder)
+
+
+func _motel(id: int, amount: int, half_launder: bool) -> void:
+	if not peers.has(id) or (states.has(id) and (states[id][0] as Vector3).distance_to(game.city.safe_pos) > 12.0):
+		return
+	var l := _ledger_of(peers[id].name)
+	if half_launder:
+		var a := mini(int(l.cash), 100000)
+		l.cash = int(l.cash) - a
+		l.bank = int(l.bank) + a / 2
+	elif amount > 0:
+		var a2 := mini(amount, int(l.cash))
+		l.cash = int(l.cash) - a2
+		l.motel = int(l.motel) + a2
+	else:
+		var a3 := mini(-amount, int(l.motel))
+		l.motel = int(l.motel) - a3
+		l.cash = int(l.cash) + a3
+	_ledger_dirty[peers[id].name] = true
+
+
+## غنائم السرقات العادية: الخادم يرميها بعد التحقق من الهدف والوقت والموقع
+func req_rob_loot(idx: int) -> void:
+	if is_server():
+		_rob_loot(my_id(), idx)
+	else:
+		_req_rob_loot.rpc_id(1, idx)
+
+
+@rpc("any_peer", "reliable")
+func _req_rob_loot(idx: int) -> void:
+	if is_server():
+		_rob_loot(multiplayer.get_remote_sender_id(), idx)
+
+
+func _rob_loot(id: int, idx: int) -> void:
+	var a: Dictionary = rob_active.get(id, {})
+	if a.is_empty() or int(a.idx) != idx or not states.has(id) or idx < 0 or idx >= game.crime.targets.size():
+		_log("rejected rob loot by %s (no active robbery of %d)" % [peers.get(id, {}).get("name", "?"), idx])
+		return
+	var t: Crime.Target = game.crime.targets[idx]
+	if (Time.get_ticks_msec() - int(a.t0)) / 1000.0 < t.time * 0.8 or (states[id][0] as Vector3).distance_to(t.pos) > 5.0:
+		_log("rejected rob loot by %s" % peers[id].name)
+		return
+	rob_active.erase(id)
+	var l := _ledger_of(peers[id].name)
+	var total := 0
+	for i in t.count:
+		var v := roundi(randf_range(t.value.x, t.value.y) / 10.0) * 10
+		l.bag.append({"name": t.loot_name, "value": v, "kind": t.loot_kind})
+		total += v
+	if t.loot_kind == "box":
+		l.bag.append({"name": "مفتاح صندوق ودائع", "value": 0, "kind": "deposit_key"})
+	_ledger_dirty[peers[id].name] = true
+	_log("%s robbed %s for %d" % [peers[id].name, t.label, total])
+	_send(id, "ledger_note", ["+%s %s في الحقيبة" % [Cfg.money(total), t.loot_name]])
+
+
+## البيع للمشتري: عند شاحنة المشتري وأنت مقنّع؛ السعر يحسبه الخادم من سمعتك
+func req_sell() -> void:
+	if is_server():
+		_sell(my_id())
+	else:
+		_req_sell.rpc_id(1)
+
+
+@rpc("any_peer", "reliable")
+func _req_sell() -> void:
+	if is_server():
+		_sell(multiplayer.get_remote_sender_id())
+
+
+func _sell(id: int) -> void:
+	if not states.has(id):
+		return
+	var p: Vector3 = states[id][0]
+	var near := false
+	for f in game.crime.fences:
+		if p.distance_to(f) < 9.0:
+			near = true
+	if not near or states[id][3] & F_MASK == 0:
+		_send(id, "ledger_note", ["المشتري لا يتعامل معك هنا (اقترب من شاحنته والبس القناع)"])
+		return
+	var l := _ledger_of(peers[id].name)
+	var base := 0
+	var keep := []
+	for it in l.bag:
+		if it.get("kind", "") == "deposit_key":
+			keep.append(it)
+		else:
+			base += int(it.get("value", 0))
+	if base <= 0:
+		return
+	var lvl := 1
+	for i in Crime.NOTORIETY_XP.size():
+		if int(l.xp) >= Crime.NOTORIETY_XP[i]:
+			lvl = i + 1
+	var bonus: float = Crime.NOTORIETY_BONUS[lvl - 1] + (0.10 if district_owner[Gangs.CENTER] == peers[id].name else 0.0)
+	var paid := int(base * (1.0 + bonus))
+	l.cash = int(l.cash) + paid
+	l.xp = int(l.xp) + base
+	l.bag = keep
+	_ledger_dirty[peers[id].name] = true
+	_log("%s sold loot for %d" % [peers[id].name, paid])
+	_send(id, "ledger_note", ["بعت الغنائم بـ %s نقوداً قذرة" % Cfg.money(paid)])
+
+
+## فروقات الحقيبة: ما أُزيل (تخزين، مقايضة) يُنقل لمخزن الخادم؛ ما أُضيف يُقبل من المخزن، أو كإنتاج ضمن سقف ساعي
+func req_bag_diff(removed: Array, added: Array) -> void:
+	if is_server():
+		_bag_diff(my_id(), removed, added)
+	else:
+		_req_bag_diff.rpc_id(1, removed, added)
+
+
+@rpc("any_peer", "reliable")
+func _req_bag_diff(removed: Array, added: Array) -> void:
+	if is_server():
+		_bag_diff(multiplayer.get_remote_sender_id(), removed, added)
+
+
+func _bag_diff(id: int, removed: Array, added: Array) -> void:
+	if not peers.has(id):
+		return
+	var l := _ledger_of(peers[id].name)
+	for it in removed:
+		var j := _find_item(l.bag, it)
+		if j >= 0:
+			l.stash.append(l.bag[j])
+			l.bag.remove_at(j)
+	var now := int(Time.get_unix_time_from_system())
+	var claims: Array = l.claims.filter(func(c): return now - int(c[0]) < 3600)
+	var used := 0
+	for c in claims:
+		used += int(c[1])
+	var rejected := 0
+	for it in added:
+		var j := _find_item(l.stash, it)
+		var val := int(it.get("value", 0))
+		if j >= 0:
+			l.bag.append(l.stash[j])
+			l.stash.remove_at(j)
+		elif CLAIMABLE.has(it.get("kind", "")) and val <= 30000 and used + val <= CLAIM_CAP_PER_HOUR:
+			l.bag.append({"name": it.get("name", ""), "value": val, "kind": it.get("kind", "")})
+			used += val
+			claims.append([now, val])
+		else:
+			rejected += 1
+	l.claims = claims
+	_ledger_dirty[peers[id].name] = true
+	if rejected > 0:
+		_log("rejected %d bag claims from %s" % [rejected, peers[id].name])
+		_send(id, "ledger_note", ["الخادم رفض %d عناصر غير قابلة للتحقق" % rejected])
+
+
+func _find_item(arr: Array, it: Dictionary) -> int:
+	for j in arr.size():
+		if arr[j].get("kind", "") == it.get("kind", "") and int(arr[j].get("value", 0)) == int(it.get("value", 0)) and arr[j].get("name", "") == it.get("name", ""):
+			return j
+	return -1
+
+
+## تطوير طاولة الغسيل: يخصم الخادم من البنك ويرفع المستوى في الدفتر
+func req_upgrade_launder() -> void:
+	if is_server():
+		_upgrade_launder(my_id())
+	else:
+		_req_upgrade_launder.rpc_id(1)
+
+
+@rpc("any_peer", "reliable")
+func _req_upgrade_launder() -> void:
+	if is_server():
+		_upgrade_launder(multiplayer.get_remote_sender_id())
+
+
+func _upgrade_launder(id: int) -> void:
+	if not peers.has(id):
+		return
+	var l := _ledger_of(peers[id].name)
+	var cost := 50000 * int(l.lvl)
+	if int(l.lvl) >= 4 or int(l.bank) < cost:
+		_send(id, "ledger_note", ["الخادم رفض التطوير (تحتاج %s في البنك)" % Cfg.money(cost)])
+		return
+	l.bank = int(l.bank) - cost
+	l.lvl = int(l.lvl) + 1
+	_ledger_dirty[peers[id].name] = true
+	_send(id, "ledger_note", ["طوّرت طاولة الغسيل إلى المستوى %d" % int(l.lvl)])
+
+
+## دخل من أحداث يحاكيها العميل (اعتقال لص آلي، ضرائب سكان آليين، طرد، سيارة المعرض):
+## لا يمكن التحقق منه كاملاً، فيُقبل ضمن حد لكل نوع وسقف ساعي مشترك
+const INCOME_MAX := {"npc_arrest": 25000, "npc_down": 2000, "evict": 60000, "settle_tax": 150000, "exhibit": 240000}
+const INCOME_CAP_PER_HOUR := 300000
+
+
+func req_income(kind: String, amount: int) -> void:
+	if is_server():
+		_income(my_id(), kind, amount)
+	else:
+		_req_income.rpc_id(1, kind, amount)
+
+
+@rpc("any_peer", "reliable")
+func _req_income(kind: String, amount: int) -> void:
+	if is_server():
+		_income(multiplayer.get_remote_sender_id(), kind, amount)
+
+
+func _income(id: int, kind: String, amount: int) -> void:
+	if not peers.has(id) or not INCOME_MAX.has(kind) or amount <= 0:
+		return
+	var l := _ledger_of(peers[id].name)
+	if not l.has("income"):
+		l["income"] = []
+	var now := int(Time.get_unix_time_from_system())
+	var inc: Array = l.income.filter(func(c): return now - int(c[0]) < 3600)
+	var used := 0
+	for c in inc:
+		used += int(c[1])
+	var a := mini(amount, int(INCOME_MAX[kind]))
+	if used + a > INCOME_CAP_PER_HOUR:
+		_log("rejected income %s %d from %s (hourly cap)" % [kind, amount, peers[id].name])
+		_send(id, "ledger_note", ["الخادم لم يعتمد هذا الدخل (تجاوزت السقف الساعي)"])
+		l.income = inc
+		return
+	inc.append([now, a])
+	l.income = inc
+	if kind in ["npc_arrest", "npc_down", "settle_tax"]:
+		l.bank = int(l.bank) + a
+	else:
+		l.cash = int(l.cash) + a
+	_ledger_dirty[peers[id].name] = true
+
+
+## منح اختباري (لا يعمل إلا إن شُغّل الخادم بـ --allow-test-grants)
+var allow_test_grants := false
+
+
+func req_test_grant(field: String, amount: int) -> void:
+	if is_server():
+		_test_grant(my_id(), field, amount)
+	else:
+		_req_test_grant.rpc_id(1, field, amount)
+
+
+@rpc("any_peer", "reliable")
+func _req_test_grant(field: String, amount: int) -> void:
+	if is_server():
+		_test_grant(multiplayer.get_remote_sender_id(), field, amount)
+
+
+func _test_grant(id: int, field: String, amount: int) -> void:
+	if not allow_test_grants or not peers.has(id) or not field in ["bank", "cash", "pool"]:
+		_log("rejected test grant from %s" % peers.get(id, {}).get("name", "?"))
+		return
+	var l := _ledger_of(peers[id].name)
+	l[field] = (float(l[field]) + amount) if field == "pool" else (int(l[field]) + amount)
+	l.t = int(Time.get_unix_time_from_system())
+	_ledger_dirty[peers[id].name] = true
+	_log("test grant %s +%d to %s" % [field, amount, peers[id].name])
+
+
+## الروليت على الخادم
+func req_roulette(amount: int, kind: String, number: int) -> void:
+	if is_server():
+		_roulette(my_id(), amount, kind, number)
+	else:
+		_req_roulette.rpc_id(1, amount, kind, number)
+
+
+@rpc("any_peer", "reliable")
+func _req_roulette(amount: int, kind: String, number: int) -> void:
+	if is_server():
+		_roulette(multiplayer.get_remote_sender_id(), amount, kind, number)
+
+
+func _roulette(id: int, amount: int, kind: String, number: int) -> void:
+	if not peers.has(id) or not states.has(id) or (states[id][0] as Vector3).distance_to(game.city.safe_pos) > 12.0:
+		return
+	var l := _ledger_of(peers[id].name)
+	var cap: int = Balance.ROULETTE_BET_CAP[clampi(int(peers[id].get("auth", 0)), 0, Balance.ROULETTE_BET_CAP.size() - 1)]
+	if amount <= 0 or amount > cap or amount > int(l.cash):
+		_send(id, "ledger_note", ["رهان غير مقبول (الحد %s، ومن الكاش الذي معك)" % Cfg.money(cap)])
+		return
+	var n := randi_range(0, 36)
+	var color := "green" if n == 0 else ("red" if MotelManager.RED.has(n) else "black")
+	var win := false
+	var mult := 2
+	match kind:
+		"red", "black":
+			win = color == kind
+		"even":
+			win = n != 0 and n % 2 == 0
+		"odd":
+			win = n % 2 == 1
+		"number":
+			win = n == number
+			mult = 36
+	var payout := amount * mult if win else 0
+	l.cash = int(l.cash) - amount + payout
+	_ledger_dirty[peers[id].name] = true
+	_send(id, "roulette_server", [n, color, amount, payout])
+
+
+@rpc("authority", "reliable")
+func roulette_server(n: int, color: String, bet: int, payout: int) -> void:
+	MotelManager.roulette_result.emit(n, color, bet, payout)
+
+
+@rpc("authority", "reliable")
+func ledger_note(text: String) -> void:
+	game.hud.toast(text, Color("ffd36b"))
+
+
+## يطبّق دفتر الخادم على اللاعب المحلي (بلا إرسال «دفع»)
+@rpc("authority", "reliable")
+func ledger_sync(view: Dictionary) -> void:
+	server_bag = view.get("bag", []).duplicate(true)
+	game.apply_ledger(view)
 
 
 # ---------------------------------------------------------------- مدينة السطو (الخادم يحسم)
@@ -878,6 +1428,17 @@ func _heist_extract(id: int, point: String, sell: bool) -> void:
 	heist_bags.erase(id)
 	if point != "city_exit" and wanted.has(id):
 		wanted[id].level = 0
+	var lh := _ledger_of(peers[id].name)
+	if sell:
+		lh.cash = int(lh.cash) + _bag_value(bag)
+	else:
+		for k in bag:
+			if k == "document":
+				continue
+			for i in int(bag[k]):
+				var kind: String = {"gold_bar": "gold", "cargo": "cargo", "deposit_key": "deposit_key"}.get(k, "heist")
+				lh.bag.append({"name": ItemDB.item_name(k), "value": ItemDB.value(k), "kind": kind})
+	_ledger_dirty[peers[id].name] = true
 	_log("%s secured heist loot (%d) at %s" % [peers[id].name, _bag_value(bag), point])
 	_send(id, "heist_secured", [bag, sell, point])
 
@@ -957,7 +1518,13 @@ func _apply_perm(perm: Dictionary) -> void:
 
 
 ## الثروة كما يعرفها الخادم من آخر ملف حفظه للاعب
-func _wealth_of(prof: Dictionary) -> int:
+func _wealth_of(prof: Dictionary, pname := "") -> int:
+	if pname != "" and (ledger.has(pname) or _profiles.has_section_key("ledger", pname)):
+		var lw := _ledger_of(pname)
+		var w := int(lw.bank) + int(lw.cash) + int(lw.pool) + int(lw.motel)
+		for it in lw.bag + lw.stash:
+			w += int(it.get("value", 0))
+		return w
 	var v := int(prof.get("bank", 0)) + int(prof.get("cash", 0))
 	var cr: Dictionary = prof.get("crime", {})
 	v += int(cr.get("pool", 0.0))
@@ -990,7 +1557,7 @@ func _sentence_player(id: int, reason: String) -> void:
 ## الحكم على لاعب (متصل أو غير متصل): الثروة ← سنوات، تحديث الملف الدائم، مسح ملفه وأراضيه
 func _sentence(pname: String, reason: String, id := 0) -> void:
 	var prof: Dictionary = _profiles.get_value("players", pname, {})
-	var value := _wealth_of(prof) + _bag_value(heist_bags.get(id, {}))
+	var value := _wealth_of(prof, pname) + _bag_value(heist_bags.get(id, {}))
 	var years := PrisonManager.years_for(value)
 	var perm := _perm(pname)
 	var before := PrisonManager.level_for_years(perm.jail_years)
@@ -1004,6 +1571,9 @@ func _sentence(pname: String, reason: String, id := 0) -> void:
 			new_rewards.append(r)
 	_profiles.set_value("permanent", pname, perm)
 	_profiles.set_value("players", pname, {})          # يبدأ من الصفر
+	ledger[pname] = _fresh_ledger()
+	_profiles.set_value("ledger", pname, ledger[pname])
+	_ledger_dirty[pname] = true
 	_sentence_lock[pname] = Time.get_ticks_msec()
 	_profiles.save(PROFILE_PATH)
 	# الأراضي والأحياء تعود بلا مالك
@@ -1051,7 +1621,7 @@ func federal_raid_all() -> void:
 	_chat_local(0, "🏛 المداهمة الفيدرالية! انتهى الموسم")
 	for n in names:
 		var id: int = names[n]
-		if id == 0 and _wealth_of(_profiles.get_value("players", n, {})) <= 0 and _profiles.get_value("players", n, {}).is_empty():
+		if id == 0 and _wealth_of(_profiles.get_value("players", n, {}), n) <= 0 and _profiles.get_value("players", n, {}).is_empty():
 			continue
 		_sentence(n, "federal_raid", id)
 	heist_cd = {}
@@ -1171,5 +1741,14 @@ func _save_profile(d: Dictionary) -> void:
 func _store_profile(pname: String, d: Dictionary) -> void:
 	if Time.get_ticks_msec() - int(_sentence_lock.get(pname, -100000)) < 4000:
 		return                                   # حفظ قديم أُرسل قبل أن يصل الحكم إلى العميل
+	if ledger.has(pname):                     # المال لا يأتي من العميل: نكتبه من دفتر الخادم
+		var l: Dictionary = ledger[pname]
+		d["bank"] = l.bank
+		d["cash"] = l.cash
+		var cr: Dictionary = d.get("crime", {})
+		cr["pool"] = l.pool
+		cr["bag"] = l.bag
+		cr["notoriety"] = l.xp
+		d["crime"] = cr
 	_profiles.set_value("players", pname, d)
 	_profiles.save(PROFILE_PATH)

@@ -249,7 +249,7 @@ func tick(dt: float) -> void:
 		t.ring.visible = open
 		t.label3d.modulate.a = 1.0 if open else 0.3
 	# الغسيل يحسبه EconomyManager بفارق الوقت الحقيقي؛ هنا نزوّده بالمعدّل والضريبة فقط
-	EconomyManager.rate_override_per_sec = launder_rate()
+	EconomyManager.rate_override_per_sec = 0.0 if game.net.is_online() else launder_rate()   # أونلاين يغسل الخادم
 	if not EconomyManager.tax_hook.is_valid():
 		EconomyManager.tax_hook = func(amount: float) -> float:
 			var cut: float = amount * game.land.tenant_tax() if game.land != null else 0.0   # ضريبة مالك المستوطنة
@@ -265,6 +265,16 @@ func tick(dt: float) -> void:
 
 
 ## يرجع نص التلميح، ويتعامل مع الضغط على E
+## هل يقف اللاعب (راجلاً) على هدف سرقة عادي؟
+func on_target(p: Vector3) -> bool:
+	if game.player.car != null:
+		return false
+	for t in targets:
+		if p.distance_to(Vector3(t.pos.x, 0, t.pos.z)) < 1.8:
+			return true
+	return false
+
+
 func interact(dt: float) -> String:
 	var p: Vector3 = game.player_pos()
 	var on_foot: bool = game.player.car == null
@@ -364,12 +374,16 @@ func _complete(t: Target) -> void:
 	for tool in t.tools:
 		tools[tool] -= 1
 	var total := 0
-	for i in t.count:
-		var v := roundi(randf_range(t.value.x, t.value.y) / 10.0) * 10
-		bag.append({"name": t.loot_name, "value": v, "kind": t.loot_kind})
-		total += v
-	if t.loot_kind == "box":
-		bag.append({"name": "مفتاح صندوق ودائع", "value": 0, "kind": "deposit_key"})
+	var online: bool = game.net.is_online()
+	if online:
+		game.net.req_rob_loot(targets.find(t))   # الخادم يرمي الغنائم ويضعها في الحقيبة بعد التحقق
+	else:
+		for i in t.count:
+			var v := roundi(randf_range(t.value.x, t.value.y) / 10.0) * 10
+			bag.append({"name": t.loot_name, "value": v, "kind": t.loot_kind})
+			total += v
+		if t.loot_kind == "box":
+			bag.append({"name": "مفتاح صندوق ودائع", "value": 0, "kind": "deposit_key"})
 	if t.uses_max > 0:
 		t.uses_left -= 1
 		t.cooldown = t.cd if t.uses_left > 0 else 240.0
@@ -381,7 +395,8 @@ func _complete(t: Target) -> void:
 	game.robbing = null
 	game.player.robbing = false
 	game.last_seen = 0.0
-	game.hud.toast("+%s %s في الحقيبة  (%d/%d)" % [Cfg.money(total), t.loot_name, bag.size(), BAG_SLOTS], Color("7dff9e"))
+	if not online:
+		game.hud.toast("+%s %s في الحقيبة  (%d/%d)" % [Cfg.money(total), t.loot_name, bag.size(), BAG_SLOTS], Color("7dff9e"))
 	game.sfx.cash()
 	game.land.on_robbery(total)
 	MotelManager.report(QuestData.Objective.ROB_TARGETS, 1)
@@ -392,6 +407,10 @@ func _sell_bag() -> void:
 		return
 	if not masked:
 		game.hud.toast("المشتري: «لا أتعامل مع وجوه مكشوفة» — البس القناع (X)", Color("ff9b3b"))
+		return
+	if game.net.is_online():
+		game.net.req_sell()                   # السعر والدفع يحسمهما الخادم
+		game.sfx.cash()
 		return
 	var sellable := bag.filter(func(i): return i.kind != "deposit_key")
 	var keys := bag.filter(func(i): return i.kind == "deposit_key")
@@ -415,6 +434,8 @@ func _sell_exhibit_car() -> void:
 	var paid := int(150000 * (1.0 + fence_bonus()))
 	notoriety_xp += 150000
 	game.cash += paid
+	if game.net.is_online():
+		game.net.req_income("exhibit", paid)
 	game.exit_car_force()
 	game.remove_car(exhibit_car)
 	exhibit_car = null
@@ -511,6 +532,12 @@ func open_laundering() -> void:
 
 
 func _deposit_launder() -> void:
+	if game.net.is_online():
+		game.net.req_deposit()
+		EconomyManager.muted(func(): launder_pool += game.cash; game.cash = 0)
+		game.hud.toast("أرسلت نقودك القذرة إلى طاولة الغسيل (الخادم يغسلها)", Color("7dff9e"))
+		open_laundering()
+		return
 	launder_pool += game.cash
 	game.hud.toast("بدأ غسيل %s — سيظهر في حسابك تدريجياً" % Cfg.money(game.cash), Color("7dff9e"))
 	game.cash = 0
@@ -519,6 +546,9 @@ func _deposit_launder() -> void:
 
 
 func _upgrade_launder(cost: int) -> void:
+	if game.net.is_online():
+		game.net.req_upgrade_launder()
+		return
 	if game.bank >= cost:
 		game.bank -= cost
 		launder_level += 1
