@@ -244,6 +244,8 @@ func _go_online() -> void:
 	MotelManager.net_spin = func(amount: int, kind: String, number: int) -> void:
 		net.req_roulette(amount, kind, number)
 	MotelManager.quest_cash_enabled = false
+	MotelManager.net_barter = func(recipe_id: String) -> void:
+		net.req_buy("motel:" + recipe_id)
 	for c in _police():
 		_remove_car(c)
 	for o in officers.duplicate():
@@ -307,8 +309,61 @@ func apply_ledger(view: Dictionary) -> void:
 	crime.bag.assign(view.get("bag", crime.bag).duplicate(true))
 	crime.notoriety_xp = int(view.get("xp", crime.notoriety_xp))
 	crime.launder_level = int(view.get("lvl", crime.launder_level))
+	if view.has("inv"):
+		_apply_inv(view.inv)
 	EconomyManager.mute -= 1
 	ledger_synced += 1
+	if _after_ledger.is_valid():
+		var cb := _after_ledger
+		_after_ledger = Callable()
+		if state == "ui":                   # القائمة ما زالت مفتوحة: أعد رسمها بالأرقام الجديدة
+			cb.call()
+
+
+var _after_ledger: Callable
+
+
+func after_ledger(cb: Callable) -> void:
+	_after_ledger = cb
+
+
+## مخزون الخادم: الأدوات والأسلحة والذخيرة وبناء المنزل كما يراها الخادم
+func _apply_inv(inv: Dictionary) -> void:
+	var items: Dictionary = inv.get("items", {})
+	for k in Net.TRACKED_ITEMS:
+		var n := int(items.get(k, 0))
+		if n > 0:
+			GameState.inventory[k] = n
+		else:
+			GameState.inventory.erase(k)
+	var owned: Array = inv.get("weapons", [])
+	if cop.on_duty:
+		cop._saved_weapons["owned"] = owned.duplicate()
+		cop._saved_weapons["ammo"] = int(inv.get("ammo", 0))
+	else:
+		weapons.owned.assign(owned)
+		weapons.ammo = int(inv.get("ammo", 0))
+		if weapons.current != "" and not owned.has(weapons.current):
+			weapons.current = owned[0] if not owned.is_empty() else ""
+	var hv: Dictionary = inv.get("house", {})
+	if hv.is_empty():
+		return
+	var hs: House = land.house
+	var before := [hs.tier, hs.annex, hs.slots.duplicate(), hs.modules.duplicate(), hs.counter, hs.tables.size(), hs.fan]
+	hs.tier = int(hv.tier)
+	hs.annex = hv.annex
+	hs.slots = (hv.slots as Array).duplicate()
+	hs.modules = (hv.modules as Dictionary).duplicate()
+	hs.counter = int(hv.counter)
+	hs.fan = bool(hv.fan)
+	while hs.tables.size() < int(hv.tables):
+		hs.tables.append(-1.0)
+	while hs.tables.size() > int(hv.tables):
+		hs.tables.pop_back()
+	if hs.annex != "lab":
+		hs.reactor_t = -1.0
+	if before != [hs.tier, hs.annex, hs.slots, hs.modules, hs.counter, hs.tables.size(), hs.fan]:
+		hs._rebuild()
 
 
 var ledger_synced := 0
@@ -427,6 +482,8 @@ func _bot_tick(dt: float) -> void:
 		_heister_bot(dt)
 	elif _bot == "econ":
 		_econ_bot(dt)
+	elif _bot == "shop":
+		_shop_bot(dt)
 	elif _bot == "fed" or _bot == "rich":
 		if _bot_t > 3.0 and _bot_t - dt <= 3.0:
 			print("BOT %s: server perm years=%d authority=%d bank=%d" % [_bot, int(GameState.profile.jail_years), PrisonManager.authority_level(), bank])
@@ -498,6 +555,34 @@ func _econ_bot(dt: float) -> void:
 		net.req_income("npc_arrest", 9999999)          # دخل مبالغ فيه ← يُقصّ إلى الحد
 	if at.call(27.0):
 		print("BOT econ: final cash=%d bank=%d pool=%.0f" % [cash, bank, crime.launder_pool])
+
+
+## روبوت المتجر: المخزون (أدوات، أسلحة، ذخيرة، أثاث) يحسمه الخادم
+func _shop_bot(dt: float) -> void:
+	var at := func(t: float) -> bool: return _bot_t > t and _bot_t - dt <= t
+	var inv_txt := func() -> String:
+		return "tools=%s weapons=%s ammo=%d slots=%s bank=%d" % [{"lockpick": GameState.item_count("lockpick"), "minidrill": GameState.item_count("minidrill"), "drill": GameState.item_count("drill"), "decoder": GameState.item_count("decoder")}, weapons.owned, weapons.ammo, land.house.slots, bank]
+	if at.call(2.0):
+		print("BOT shop: start " + inv_txt.call())
+		net.req_test_grant("bank", 300000)
+	if at.call(4.0):
+		crime._buy("minidrill")
+		crime._buy_weapon("shotgun")
+		land.house._place("cabinet")
+	if at.call(6.0):
+		close_menu()
+		print("BOT shop: bought " + inv_txt.call())
+		GameState.inventory["drill"] = 5            # غش: أدوات لم تُشترَ
+		weapons.owned.append("smg")
+		land.house.slots.append("safe")
+		crime._barter("decoder")                     # بلا مفاتيح ودائع في الحقيبة ← يُرفض
+	if at.call(12.0):
+		close_menu()
+		print("BOT shop: after cheat " + inv_txt.call())
+		for i in 40:                                 # 40 رشقة وفي مخزون الخادم 36 طلقة
+			net.shot(player.global_position + Vector3(0, 1.4 + i * 0.01, 0), Vector3.FORWARD, 30.0, 10.0)
+	if at.call(15.0):
+		print("BOT shop: after 40 shots " + inv_txt.call())
 
 
 func _heister_bot(dt: float) -> void:

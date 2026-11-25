@@ -118,6 +118,7 @@ func join(ip: String, port := PORT) -> String:
 func leave() -> void:
 	EconomyManager.outflow_hook = Callable()
 	MotelManager.net_spin = Callable()
+	MotelManager.net_barter = Callable()
 	MotelManager.quest_cash_enabled = true
 	game.ledger_synced = 0
 	if game.heist:
@@ -516,6 +517,8 @@ func _shot(origin: Vector3, dir: Vector3, rng: float, dmg: float) -> void:
 
 
 func _server_shot(shooter: int, origin: Vector3, dir: Vector3, rng: float, dmg: float) -> void:
+	if not _spend_ammo(shooter, origin):
+		return
 	dir = dir.normalized()
 	rng = minf(rng, 100.0)
 	var q := PhysicsRayQueryParameters3D.create(origin, origin + dir * rng, Cfg.LAYER_WORLD | Cfg.LAYER_VEHICLES)
@@ -714,6 +717,9 @@ func _land_do(id: int, kind: String, s: int, p: int) -> void:
 				reason = "القطعة فارغة"
 			else:
 				_log("evicted %s" % plot_tenant[key])
+				var victim := _ledger_of(plot_tenant[key])
+				victim.inv.house = _fresh_inv().house       # المنزل يضيع مع القطعة
+				_ledger_dirty[plot_tenant[key]] = true
 				plot_tenant.erase(key)
 		"buy":
 			if settle_owner[s] != "":
@@ -826,7 +832,7 @@ func land_rent(amount: int, _from: String) -> void:
 
 # ---------------------------------------------------------------- دفتر الاقتصاد (الخادم يحسم المال)
 func _fresh_ledger() -> Dictionary:
-	return {"bank": 0, "cash": START_CASH, "pool": 0.0, "motel": 0, "bag": [], "stash": [], "xp": 0, "lvl": 1, "claims": [], "t": int(Time.get_unix_time_from_system())}
+	return {"bank": 0, "cash": START_CASH, "pool": 0.0, "motel": 0, "bag": [], "stash": [], "xp": 0, "lvl": 1, "claims": [], "t": int(Time.get_unix_time_from_system()), "inv": _fresh_inv()}
 
 
 func _ledger_of(pname: String) -> Dictionary:
@@ -846,6 +852,8 @@ func _ledger_of(pname: String) -> Dictionary:
 			l.xp = int(cr.get("notoriety", 0))
 			l.lvl = int(cr.get("launder_level", 1))
 			l.motel = int(prof.get("land", {}).get("motel", 0))
+	if not l.has("inv"):
+		l["inv"] = _inv_from_profile(_profiles.get_value("players", pname, {}))
 	var fresh := _fresh_ledger()
 	for k in fresh:
 		if not l.has(k):
@@ -865,7 +873,7 @@ func _sync_ledger(id: int) -> void:
 	if not peers.has(id):
 		return
 	var l := _ledger_of(peers[id].name)
-	var view := {"bank": int(l.bank), "cash": int(l.cash), "pool": float(l.pool), "motel": int(l.motel), "bag": l.bag, "xp": int(l.xp), "lvl": int(l.lvl)}
+	var view := {"bank": int(l.bank), "cash": int(l.cash), "pool": float(l.pool), "motel": int(l.motel), "bag": l.bag, "xp": int(l.xp), "lvl": int(l.lvl), "inv": l.inv}
 	_send(id, "ledger_sync", [view])
 
 
@@ -1050,6 +1058,15 @@ func _rob_loot(id: int, idx: int) -> void:
 		return
 	rob_active.erase(id)
 	var l := _ledger_of(peers[id].name)
+	var items: Dictionary = l.inv.items
+	for tool in t.tools:
+		if int(items.get(tool, 0)) <= 0:
+			_log("rejected rob loot by %s (missing %s on server)" % [peers[id].name, tool])
+			_send(id, "ledger_note", ["الخادم رفض السرقة: لا تملك %s" % Crime.TOOLS[tool].name])
+			_ledger_dirty[peers[id].name] = true
+			return
+	for tool in t.tools:
+		items[tool] = int(items[tool]) - 1
 	var total := 0
 	for i in t.count:
 		var v := roundi(randf_range(t.value.x, t.value.y) / 10.0) * 10
@@ -1237,6 +1254,276 @@ func _income(id: int, kind: String, amount: int) -> void:
 	else:
 		l.cash = int(l.cash) + a
 	_ledger_dirty[peers[id].name] = true
+
+
+# ---------------------------------------------------------------- مخزون الخادم (الأدوات، الأسلحة، الذخيرة، بناء المنزل)
+const TRACKED_ITEMS := ["lockpick", "minidrill", "drill", "cutter", "jammer", "bank_card", "decoder", "armory_card", "decoder_epic", "master_key", "eviction_right", "pass_vip"]
+const BAG_KIND_OF := {"deposit_key": "deposit_key", "gold_bar": "gold", "gold": "gold", "art": "art"}
+var _last_volley := {}                      # peer -> origin آخر طلقة (لعدّ الخرطوش طلقة واحدة)
+
+
+func _fresh_inv() -> Dictionary:
+	return {"items": {"lockpick": 3}, "weapons": ["pistol"], "ammo": 36,
+		"house": {"tier": 1, "annex": "", "slots": [], "modules": {}, "counter": 0, "tables": 0, "fan": false}}
+
+
+## ترحيل لمرة واحدة: ما كان محفوظاً على الخادم من ملف اللاعب القديم
+func _inv_from_profile(prof: Dictionary) -> Dictionary:
+	var inv := _fresh_inv()
+	if prof.is_empty():
+		return inv
+	var tools: Dictionary = prof.get("crime", {}).get("tools", {})
+	inv.items = {}
+	for k in tools:
+		if TRACKED_ITEMS.has(k) and int(tools[k]) > 0:
+			inv.items[k] = int(tools[k])
+	var w: Dictionary = prof.get("weapons", {})
+	inv.weapons = (w.get("owned", []) as Array).filter(func(x): return Weapons.CATALOG.has(x) and int(Weapons.CATALOG[x].price) > 0)
+	inv.ammo = int(w.get("ammo", 0))
+	var h: Dictionary = prof.get("land", {}).get("house", {})
+	if not h.is_empty():
+		inv.house = {"tier": int(h.get("tier", 1)), "annex": h.get("annex", ""), "slots": h.get("slots", []), "modules": h.get("modules", {}),
+			"counter": int(h.get("counter", 0)), "tables": (h.get("tables", []) as Array).size(), "fan": bool(h.get("fan", false))}
+	return inv
+
+
+func _pay_ledger(l: Dictionary, amount: int, bank_only := false) -> bool:
+	if amount <= 0:
+		return true
+	if bank_only:
+		if int(l.bank) < amount:
+			return false
+		l.bank = int(l.bank) - amount
+		return true
+	if int(l.cash) + int(l.bank) < amount:
+		return false
+	var from_cash := mini(int(l.cash), amount)
+	l.cash = int(l.cash) - from_cash
+	l.bank = int(l.bank) - (amount - from_cash)
+	return true
+
+
+func _take_from_bag(l: Dictionary, kind: String, n: int) -> bool:
+	var idx := []
+	for j in l.bag.size():
+		if l.bag[j].get("kind", "") == kind and idx.size() < n:
+			idx.append(j)
+	if idx.size() < n:
+		return false
+	idx.reverse()
+	for j in idx:
+		l.bag.remove_at(j)
+	return true
+
+
+## الشراء: what = "tool:x" | "barter:x" | "weapon:x" | "ammo" | "house:upgrade|place:k|annex:a|demolish|counter|module:m|table|fan" | "motel:recipe"
+func req_buy(what: String) -> void:
+	if is_server():
+		_buy(my_id(), what)
+	else:
+		_req_buy.rpc_id(1, what)
+
+
+@rpc("any_peer", "reliable")
+func _req_buy(what: String) -> void:
+	if is_server():
+		_buy(multiplayer.get_remote_sender_id(), what)
+
+
+func _buy(id: int, what: String) -> void:
+	if not peers.has(id):
+		return
+	var pname: String = peers[id].name
+	var l := _ledger_of(pname)
+	var inv: Dictionary = l.inv
+	var items: Dictionary = inv.items
+	var h: Dictionary = inv.house
+	var p := what.split(":")
+	var arg: String = p[1] if p.size() > 1 else ""
+	var why := ""
+	match p[0]:
+		"tool":
+			if not Crime.TOOLS.has(arg) or not Crime.TOOLS[arg].has("price"):
+				why = "أداة غير معروفة"
+			elif not _pay_ledger(l, int(Crime.TOOLS[arg].price)):
+				why = "رصيدك لا يكفي"
+			else:
+				items[arg] = int(items.get(arg, 0)) + 1
+		"barter":
+			if not Crime.TOOLS.has(arg) or not Crime.TOOLS[arg].has("barter"):
+				why = "مقايضة غير معروفة"
+			else:
+				var need: Dictionary = Crime.TOOLS[arg].barter
+				for k in need:
+					if l.bag.filter(func(it): return it.get("kind", "") == k).size() < int(need[k]):
+						why = "تنقصك عناصر المقايضة في حقيبتك"
+				if why == "":
+					for k in need:
+						_take_from_bag(l, k, int(need[k]))
+					items[arg] = int(items.get(arg, 0)) + 1
+		"motel":
+			why = _motel_barter(id, l, arg)
+		"weapon":
+			if not Weapons.CATALOG.has(arg) or int(Weapons.CATALOG[arg].price) <= 0 or inv.weapons.has(arg):
+				why = "سلاح غير متاح"
+			elif not _pay_ledger(l, int(Weapons.CATALOG[arg].price)):
+				why = "رصيدك لا يكفي"
+			else:
+				inv.weapons.append(arg)
+				if int(inv.ammo) < 30:
+					inv.ammo = int(inv.ammo) + 30
+		"ammo":
+			if not _pay_ledger(l, 1500):
+				why = "رصيدك لا يكفي"
+			else:
+				inv.ammo = int(inv.ammo) + 60
+		"house":
+			why = _house_buy(pname, l, h, arg, p[2] if p.size() > 2 else "")
+		_:
+			why = "طلب غير معروف"
+	if why != "":
+		_log("rejected buy %s by %s: %s" % [what, pname, why])
+		_send(id, "ledger_note", ["الخادم رفض الشراء: " + why])
+	else:
+		_log("%s bought %s" % [pname, what])
+	_ledger_dirty[pname] = true
+	_sync_ledger(id)                          # فوراً لتظهر النتيجة في القائمة
+
+
+func _house_buy(pname: String, l: Dictionary, h: Dictionary, sub: String, arg: String) -> String:
+	var te: int = 4 if settle_owner.has(pname) else int(h.tier)
+	match sub:
+		"upgrade":
+			var nt := te + 1
+			if te >= 3:
+				return "لا ترقية بعد هذا المستوى"
+			if not _pay_ledger(l, House.UPGRADE_COST[nt], true):
+				return "تحتاج %s في البنك" % Cfg.money(House.UPGRADE_COST[nt])
+			h.tier = nt
+		"place":
+			if not House.FURN.has(arg):
+				return "أثاث غير معروف"
+			var slot: String = House.FURN[arg].slot
+			var cap: int = House.TIER_SLOTS[te].get(slot, 0) + (2 if slot == "bench" and h.annex == "workshop" else 0)
+			var used := 0
+			for k in h.slots:
+				if House.FURN.has(k) and House.FURN[k].slot == slot:
+					used += 1
+			if used >= cap:
+				return "لا مكان فارغ"
+			if not _pay_ledger(l, int(House.FURN[arg].price), true):
+				return "رصيدك في البنك لا يكفي"
+			h.slots.append(arg)
+		"annex":
+			if not House.ANNEX.has(arg) or h.annex != "" or settle_owner.has(pname):
+				return "لا يمكن بناء الملحق"
+			if not _pay_ledger(l, int(House.ANNEX[arg].price), true):
+				return "رصيدك في البنك لا يكفي"
+			h.annex = arg
+			h.tables = 1 if arg == "grow" else 0
+		"demolish":
+			h.annex = ""
+			h.tables = 0
+		"counter":
+			if int(h.counter) >= House.COUNTERS.size() - 1:
+				return "أعلى عدّاد"
+			if not _pay_ledger(l, int(House.COUNTERS[int(h.counter) + 1].price), true):
+				return "رصيدك في البنك لا يكفي"
+			h.counter = int(h.counter) + 1
+		"module":
+			if not House.MODULES.has(arg) or h.modules.has(arg):
+				return "وحدة غير متاحة"
+			if not _pay_ledger(l, int(House.MODULES[arg].price), true):
+				return "رصيدك في البنك لا يكفي"
+			h.modules[arg] = true
+		"table":
+			if h.annex != "grow" or int(h.tables) >= 6:
+				return "لا مكان لطاولة"
+			if not _pay_ledger(l, House.TABLE_PRICE, true):
+				return "رصيدك في البنك لا يكفي"
+			h.tables = int(h.tables) + 1
+		"fan":
+			if h.annex != "grow" or h.fan:
+				return "غير متاح"
+			if not _pay_ledger(l, House.FAN_PRICE, true):
+				return "رصيدك في البنك لا يكفي"
+			h.fan = true
+		_:
+			return "طلب غير معروف"
+	return ""
+
+
+## مقايضة الباب المريب في الموتيل (وصفات MotelManager)
+func _motel_barter(id: int, l: Dictionary, recipe_id: String) -> String:
+	var r: BarterRecipe = null
+	for x in MotelManager.recipes:
+		if x.id == recipe_id:
+			r = x
+	if r == null:
+		return "وصفة غير معروفة"
+	if int(peers[id].get("auth", 0)) < r.required_authority:
+		return "نفوذك غير كافٍ"
+	if not TRACKED_ITEMS.has(r.output_item):
+		return "مخرجات غير مدعومة"
+	var items: Dictionary = l.inv.items
+	for k in r.inputs:
+		var n := int(r.inputs[k])
+		if TRACKED_ITEMS.has(k):
+			if int(items.get(k, 0)) < n:
+				return "تنقصك عناصر المقايضة"
+		elif BAG_KIND_OF.has(k):
+			if l.bag.filter(func(it): return it.get("kind", "") == BAG_KIND_OF[k]).size() < n:
+				return "تنقصك عناصر المقايضة في حقيبتك"
+		else:
+			return "عنصر غير مدعوم"
+	if int(l.cash) + int(l.bank) < r.cash_cost:
+		return "رصيدك لا يكفي"
+	_pay_ledger(l, r.cash_cost)
+	for k in r.inputs:
+		if TRACKED_ITEMS.has(k):
+			items[k] = int(items[k]) - int(r.inputs[k])
+		else:
+			_take_from_bag(l, BAG_KIND_OF[k], int(r.inputs[k]))
+	items[r.output_item] = int(items.get(r.output_item, 0)) + r.output_count
+	return ""
+
+
+## استهلاك أداة خارج السرقات (جهاز التشويش، أجهزة فك الشفرة للطرد والاقتحام)
+func req_use(item: String, n: int) -> void:
+	if is_server():
+		_use(my_id(), item, n)
+	else:
+		_req_use.rpc_id(1, item, n)
+
+
+@rpc("any_peer", "reliable")
+func _req_use(item: String, n: int) -> void:
+	if is_server():
+		_use(multiplayer.get_remote_sender_id(), item, n)
+
+
+func _use(id: int, item: String, n: int) -> void:
+	if not peers.has(id) or not TRACKED_ITEMS.has(item) or n <= 0:
+		return
+	var items: Dictionary = _ledger_of(peers[id].name).inv.items
+	items[item] = maxi(0, int(items.get(item, 0)) - n)
+	_ledger_dirty[peers[id].name] = true
+
+
+## الرصاص: كل رشقة تستهلك طلقة من مخزون الخادم؛ بلا ذخيرة لا تصيب أحداً (الشرطة مستثناة: سلاح الخدمة)
+func _spend_ammo(shooter: int, origin: Vector3) -> bool:
+	if not peers.has(shooter) or peers[shooter].role == "cop":
+		return true
+	if _last_volley.get(shooter, Vector3.INF) == origin:
+		return true                            # بقية حبيبات الخرطوش من الرشقة نفسها
+	_last_volley[shooter] = origin
+	var inv: Dictionary = _ledger_of(peers[shooter].name).inv
+	if int(inv.ammo) <= 0:
+		_log("rejected shot by %s (no server ammo)" % peers[shooter].name)
+		return false
+	inv.ammo = int(inv.ammo) - 1
+	_ledger_dirty[peers[shooter].name] = true
+	return true
 
 
 ## منح اختباري (لا يعمل إلا إن شُغّل الخادم بـ --allow-test-grants)
@@ -1749,6 +2036,15 @@ func _store_profile(pname: String, d: Dictionary) -> void:
 		cr["pool"] = l.pool
 		cr["bag"] = l.bag
 		cr["notoriety"] = l.xp
+		var tools: Dictionary = (cr.get("tools", {}) as Dictionary).duplicate()
+		for k in TRACKED_ITEMS:
+			tools[k] = int(l.inv.items.get(k, 0))
+		cr["tools"] = tools
 		d["crime"] = cr
+		var wd: Dictionary = d.get("weapons", {})
+		if peers.get(_peer_by_name(pname), {}).get("role", "") != "cop":
+			wd["owned"] = l.inv.weapons
+			wd["ammo"] = l.inv.ammo
+			d["weapons"] = wd
 	_profiles.set_value("players", pname, d)
 	_profiles.save(PROFILE_PATH)

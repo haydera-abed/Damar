@@ -146,6 +146,9 @@ godot --headless --path godot res://scenes/tests/core_persist.tscn -- --core-per
   تحت `EconomyManager.mute` (بلا إبلاغ)، وكل نقص آخر في `add_dirty`/`add_bank` يمر عبر `EconomyManager.outflow_hook`
   ← `net.req_spend`. الروليت عبر `MotelManager.net_spin` ← `net.req_roulette`. الغسيل المحلي معطل أونلاين
   (`rate_override_per_sec = 0`) ويجري على الخادم في `_launder_ledgers`.
+  المخزون في `ledger.inv` (items لـ `Net.TRACKED_ITEMS`، weapons، ammo، house): الشراء عبر `net.req_buy("tool:x" | "weapon:x" |
+  "ammo" | "barter:x" | "motel:recipe" | "house:...")`، والاستهلاك عبر `net.req_use`، ويُطبَّق محلياً في `game._apply_inv`.
+  مقايضة `MotelManager.barter` تمر أونلاين عبر `MotelManager.net_barter`.
 - سرقات المتاجر القديمة (`crime.gd`: الخزائن، المعرض، مستودع الشرطة…) ما زالت نظامها الخاص بجانب أهداف مدينة السطو.
 
 ## اختبارات إضافية

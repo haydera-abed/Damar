@@ -17,6 +17,7 @@ signal shipment_ordered(shipment_id: String, eta_unix: int)
 signal shipment_delivered(shipment_id: String, contents: Dictionary)
 signal roulette_result(number: int, color: String, bet: int, payout: int)
 var net_spin: Callable                 # يُضبط في اللعب الجماعي
+var net_barter: Callable
 var quest_cash_enabled := true         # مكافآت المهام النقدية لا يتحقق منها الخادم بعد ← معطلة أونلاين
 signal motel_error(reason: String)
 
@@ -83,6 +84,9 @@ func available_recipes() -> Array[BarterRecipe]:
 
 
 func barter(recipe_id: String) -> bool:
+	if net_barter.is_valid():                      # اللعب الجماعي: الخادم يتحقق من المدخلات ويضيف الناتج لمخزونك
+		net_barter.call(recipe_id)
+		return true
 	var r: BarterRecipe = null
 	for x in recipes:
 		if x.id == recipe_id:
@@ -142,8 +146,9 @@ func report(objective: int, amount: int) -> void:
 			done[qid] = true
 			if quest_cash_enabled:
 				EconomyManager.add_dirty(q.reward_cash)
-			for k in q.reward_items:
-				GameState.add_item(k, int(q.reward_items[k]))
+			if quest_cash_enabled:
+				for k in q.reward_items:
+					GameState.add_item(k, int(q.reward_items[k]))
 			quest_completed.emit(qid, q.reward_cash)
 
 

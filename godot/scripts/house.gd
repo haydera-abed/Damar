@@ -216,6 +216,10 @@ func open_plan() -> void:
 
 
 func _upgrade() -> void:
+	if game.net.is_online():
+		game.net.req_buy("house:upgrade")
+		game.after_ledger(open_plan)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	var nt := tier_eff() + 1
 	if game.bank < UPGRADE_COST[nt]:
 		return
@@ -227,6 +231,10 @@ func _upgrade() -> void:
 
 
 func _place(k: String) -> void:
+	if game.net.is_online():
+		game.net.req_buy("house:place:" + k)
+		game.after_ledger(open_plan)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	var f: Dictionary = FURN[k]
 	if game.bank < f.price or slot_used(f.slot) >= slot_cap(f.slot):
 		return
@@ -238,6 +246,10 @@ func _place(k: String) -> void:
 
 
 func _build_annex(a: String) -> void:
+	if game.net.is_online():
+		game.net.req_buy("house:annex:" + a)
+		game.after_ledger(open_plan)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	if game.bank < ANNEX[a].price:
 		return
 	game.bank -= ANNEX[a].price
@@ -250,6 +262,10 @@ func _build_annex(a: String) -> void:
 
 
 func _demolish() -> void:
+	if game.net.is_online():
+		game.net.req_buy("house:demolish")
+		game.after_ledger(open_plan)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	annex = ""
 	tables = []
 	reactor_t = -1.0
@@ -303,6 +319,10 @@ func _repair() -> void:
 
 
 func _counter() -> void:
+	if game.net.is_online():
+		game.net.req_buy("house:counter")
+		game.after_ledger(open_desk)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	var c: Dictionary = COUNTERS[counter + 1]
 	if game.bank < c.price:
 		return
@@ -380,6 +400,10 @@ func open_bench() -> void:
 
 
 func _module(m: String) -> void:
+	if game.net.is_online():
+		game.net.req_buy("house:module:" + m)
+		game.after_ledger(open_bench)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	if game.bank < MODULES[m].price:
 		return
 	game.bank -= MODULES[m].price
@@ -425,6 +449,10 @@ func _harvest(i: int) -> void:
 
 
 func _add_table() -> void:
+	if game.net.is_online():
+		game.net.req_buy("house:table")
+		game.after_ledger(open_grow)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	if game.bank < TABLE_PRICE:
 		return
 	game.bank -= TABLE_PRICE
@@ -434,6 +462,10 @@ func _add_table() -> void:
 
 
 func _buy_fan() -> void:
+	if game.net.is_online():
+		game.net.req_buy("house:fan")
+		game.after_ledger(open_grow)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	if game.bank < FAN_PRICE:
 		return
 	game.bank -= FAN_PRICE

@@ -320,6 +320,8 @@ func interact(dt: float) -> String:
 		if tools.get("jammer", 0) > 0:
 			if Input.is_action_just_pressed("interact"):
 				tools.jammer -= 1
+				if game.net.is_online():
+					game.net.req_use("jammer", 1)
 				exhibit_car.locked = false
 				game.set_wanted(4, "🚨 بلاغ للمدينة كلها: سرقة سيارة المعرض!")
 				game.hud.toast("تم تعطيل الإنذار — اركبها (F) وسلّمها للمشتري", Color("ffd36b"))
@@ -483,6 +485,10 @@ func _pay(amount: int) -> bool:
 
 
 func _buy(id: String) -> void:
+	if game.net.is_online():
+		game.net.req_buy("tool:" + id)       # الخادم يخصم ويضيف الأداة لمخزونك عنده
+		game.after_ledger(open_market)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	if _pay(TOOLS[id].price):
 		tools[id] = tools.get(id, 0) + 1
 		game.sfx.cash()
@@ -491,6 +497,11 @@ func _buy(id: String) -> void:
 
 
 func _buy_weapon(w: String) -> void:
+	if game.net.is_online():
+		game.net.req_buy("weapon:" + w)
+		game.weapons.current = w
+		game.after_ledger(open_market)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	if _pay(Weapons.CATALOG[w].price):
 		game.weapons.give(w)
 		game.save_game()
@@ -498,6 +509,10 @@ func _buy_weapon(w: String) -> void:
 
 
 func _buy_ammo() -> void:
+	if game.net.is_online():
+		game.net.req_buy("ammo")
+		game.after_ledger(open_market)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	if _pay(1500):
 		game.weapons.ammo += 60
 		game.save_game()
@@ -505,6 +520,10 @@ func _buy_ammo() -> void:
 
 
 func _barter(id: String) -> void:
+	if game.net.is_online():
+		game.net.req_buy("barter:" + id)
+		game.after_ledger(open_market)            # تُفتح القائمة من جديد عند وصول رد الخادم
+		return
 	var t: Dictionary = TOOLS[id]
 	for k in t.barter:
 		var need: int = t.barter[k]

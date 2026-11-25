@@ -769,6 +769,8 @@ func _buy_eviction() -> void:
 	if game.crime.tools.get("decoder", 0) < EVICT_DECODERS or not game.crime._pay(EVICT_PRICE):
 		return
 	game.crime.tools["decoder"] -= EVICT_DECODERS
+	if game.net.is_online():
+		game.net.req_use("decoder", EVICT_DECODERS)
 	eviction_rights += 1
 	game.hud.toast("📜 حصلت على حق طرد — اقتحم منزل ساكن لتطرده", Color("ffd36b"))
 	game.save_game()
@@ -884,6 +886,8 @@ func _do_evict(si: int, k: int, need: int) -> void:
 	_evict = {}
 	eviction_rights -= 1
 	game.crime.tools["decoder"] = game.crime.tools.get("decoder", 0) - need
+	if game.net.is_online():
+		game.net.req_use("decoder", need)
 	var loot: int = randi_range(5000, 20000) * int(s.level)
 	game.cash += loot
 	if game.net.is_online():
