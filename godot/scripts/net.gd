@@ -36,6 +36,10 @@ var plot_tenant := {}                                           # "مستوطن�
 var heist_cd := {}                                              # target_id -> unix حتى يُفتح
 var heist_active := {}                                          # peer -> {target, t0}
 var heist_bags := {}                                            # peer -> {item: n}
+# السجن الفيدرالي والنفوذ (الخادم يحسم): الملف الدائم لكل لاعب في قسم "permanent" ولا يُمسح أبداً
+var season_start := 0                                           # بداية الموسم (المداهمة بعد 7 أيام حقيقية)
+var _sentence_lock := {}                                        # اسم -> وقت؛ نتجاهل حفظاً قديماً يصل بعد الحكم
+var _raid_check := 0.0
 var _send_t := 0.0
 var _snap_t := 0.0
 var _tax_t := 120.0
@@ -74,8 +78,15 @@ func host(port := PORT, dedicated := false) -> String:
 	mode = Mode.SERVER if dedicated else Mode.HOST
 	_signals()
 	_profiles.load(PROFILE_PATH)
+	season_start = int(_profiles.get_value("server", "season_start", 0))
+	if season_start == 0:
+		season_start = int(Time.get_unix_time_from_system())
+		_profiles.set_value("server", "season_start", season_start)
+		_profiles.save(PROFILE_PATH)
 	if not dedicated:
-		peers[1] = {"name": my_name, "role": my_role, "auth": PrisonManager.authority_level(), "years": int(GameState.profile.jail_years)}
+		var perm := _perm(my_name)
+		peers[1] = {"name": my_name, "role": my_role, "auth": PrisonManager.level_for_years(perm.jail_years), "years": perm.jail_years}
+		_apply_perm(perm)
 		wanted[1] = {"level": 0, "unseen": 0.0}
 	_log("listening on port %d" % port)
 	return ""
@@ -186,10 +197,15 @@ func register(pname: String, role: String, info: Dictionary = {}) -> void:
 	if role == "cop" and _cop_count() >= MAX_COPS:
 		role = "criminal"
 		note = "كل مقاعد الشرطة (%d) مشغولة — دخلت كمجرم" % MAX_COPS
-	peers[id] = {"name": pname, "role": role, "auth": int(info.get("auth", 0)), "years": int(info.get("years", 0))}
+	var perm := _perm(pname)                 # الخادم مصدر الحقيقة للنفوذ (ما يعلنه العميل للعرض فقط في السجل)
+	peers[id] = {"name": pname, "role": role, "auth": PrisonManager.level_for_years(perm.jail_years), "years": perm.jail_years}
+	if int(info.get("years", 0)) != perm.jail_years:
+		_log("ignored client-claimed years %d for %s (server: %d)" % [int(info.get("years", 0)), pname, perm.jail_years])
 	wanted[id] = {"level": 0, "unseen": 0.0}
 	var profile: Dictionary = _profiles.get_value("players", pname, {})
-	welcome.rpc_id(id, id, pname, role, peers, profile, _shared_state(), note)
+	var shared := _shared_state()
+	shared["perm"] = perm
+	welcome.rpc_id(id, id, pname, role, peers, profile, shared, note)
 	peer_joined.rpc(id, pname, role, peers[id].auth)
 	if mode == Mode.HOST:
 		_spawn_remote(id)
@@ -202,7 +218,7 @@ func _shared_state() -> Dictionary:
 	var cds := []
 	for t in game.crime.targets:
 		cds.append([t.cooldown, t.uses_left])
-	return {"targets": cds, "districts": district_owner, "settle": settle_owner, "plots": plot_tenant, "heist_cd": heist_cd}
+	return {"targets": cds, "districts": district_owner, "settle": settle_owner, "plots": plot_tenant, "heist_cd": heist_cd, "season_start": season_start}
 
 
 @rpc("authority", "reliable")
@@ -224,6 +240,8 @@ func welcome(id: int, pname: String, role: String, peer_dict: Dictionary, profil
 	plot_tenant = shared.get("plots", {})
 	game.land.mp_apply(settle_owner, plot_tenant)
 	heist_cd = shared.get("heist_cd", {})
+	season_start = int(shared.get("season_start", 0))
+	_apply_perm(shared.get("perm", {}))
 	for k in heist_cd:
 		HeistCityManager.cooldowns[k] = int(heist_cd[k])
 	joined.emit(true, note)
@@ -315,6 +333,11 @@ func _apply_snapshot(data: Dictionary) -> void:
 
 ## الخادم: تناقص المطلوبية عندما لا يرى أي شرطي (لاعب) المجرمَ، والضرائب
 func _server_tick(dt: float) -> void:
+	_raid_check -= dt
+	if _raid_check <= 0.0:
+		_raid_check = 2.0
+		if int(Time.get_unix_time_from_system()) >= season_start + Balance.WIPE_PERIOD_SEC:
+			federal_raid_all()
 	for id in wanted:
 		var w: Dictionary = wanted[id]
 		if w.level <= 0 or not states.has(id):
@@ -916,6 +939,142 @@ func heist_secured(bag: Dictionary, sell: bool, point: String) -> void:
 	HeistCityManager.secure_items(bag, sell, point)
 
 
+# ---------------------------------------------------------------- السجن الفيدرالي والنفوذ (الخادم يحسم)
+func _perm(pname: String) -> Dictionary:
+	var p: Dictionary = _profiles.get_value("permanent", pname, {})
+	return {"jail_years": int(p.get("jail_years", 0)), "sentences": int(p.get("sentences", 0)), "rewards": p.get("rewards", [])}
+
+
+## يطبّق ملف الخادم الدائم على اللاعب المحلي (للعرض ولمكافآت الشحنات)
+func _apply_perm(perm: Dictionary) -> void:
+	if perm.is_empty():
+		return
+	GameState.profile.jail_years = int(perm.get("jail_years", 0))
+	GameState.profile.sentences = int(perm.get("sentences", 0))
+	GameState.profile.rewards = perm.get("rewards", [])
+	GameState.profile.authority = PrisonManager.level_for_years(GameState.profile.jail_years)
+	GameState.profile_changed.emit(GameState.profile)
+
+
+## الثروة كما يعرفها الخادم من آخر ملف حفظه للاعب
+func _wealth_of(prof: Dictionary) -> int:
+	var v := int(prof.get("bank", 0)) + int(prof.get("cash", 0))
+	var cr: Dictionary = prof.get("crime", {})
+	v += int(cr.get("pool", 0.0))
+	for it in cr.get("bag", []):
+		v += int(it.get("value", 0))
+	var ld: Dictionary = prof.get("land", {})
+	v += int(ld.get("motel", 0))
+	return v
+
+
+func surrender_feds() -> void:
+	if is_server():
+		_sentence_player(my_id(), "surrender")
+	else:
+		_req_surrender.rpc_id(1)
+
+
+@rpc("any_peer", "reliable")
+func _req_surrender() -> void:
+	if is_server():
+		_sentence_player(multiplayer.get_remote_sender_id(), "surrender")
+
+
+func _sentence_player(id: int, reason: String) -> void:
+	if not peers.has(id):
+		return
+	_sentence(peers[id].name, reason, id)
+
+
+## الحكم على لاعب (متصل أو غير متصل): الثروة ← سنوات، تحديث الملف الدائم، مسح ملفه وأراضيه
+func _sentence(pname: String, reason: String, id := 0) -> void:
+	var prof: Dictionary = _profiles.get_value("players", pname, {})
+	var value := _wealth_of(prof) + _bag_value(heist_bags.get(id, {}))
+	var years := PrisonManager.years_for(value)
+	var perm := _perm(pname)
+	var before := PrisonManager.level_for_years(perm.jail_years)
+	perm.jail_years += years
+	perm.sentences += 1
+	var after := PrisonManager.level_for_years(perm.jail_years)
+	var new_rewards := []
+	for r in PrisonManager.rewards_between(before, after):
+		if not perm.rewards.has(r):
+			perm.rewards.append(r)
+			new_rewards.append(r)
+	_profiles.set_value("permanent", pname, perm)
+	_profiles.set_value("players", pname, {})          # يبدأ من الصفر
+	_sentence_lock[pname] = Time.get_ticks_msec()
+	_profiles.save(PROFILE_PATH)
+	# الأراضي والأحياء تعود بلا مالك
+	var land_changed := false
+	for i in settle_owner.size():
+		if settle_owner[i] == pname:
+			settle_owner[i] = ""
+			land_changed = true
+	for k in plot_tenant.keys():
+		if plot_tenant[k] == pname:
+			plot_tenant.erase(k)
+			land_changed = true
+	for i in district_owner.size():
+		if district_owner[i] == pname:
+			_set_district(i, "")
+	if land_changed:
+		land_state.rpc(settle_owner, plot_tenant)
+		if mode == Mode.HOST:
+			land_state(settle_owner, plot_tenant)
+	_log("%s sentenced (%s): wealth %d -> %d years, total %d, authority %d" % [pname, reason, value, years, perm.jail_years, after])
+	if id != 0:
+		heist_bags.erase(id)
+		heist_active.erase(id)
+		if wanted.has(id):
+			wanted[id].level = 0
+		peers[id].auth = after
+		peers[id].years = perm.jail_years
+		_send(id, "fed_sentenced", [years, value, perm, reason, new_rewards])
+		peer_authority.rpc(id, after)
+	var msg := "⛓ %s %s — %d سنة سجن" % [pname, "استسلم للفيدراليين" if reason == "surrender" else "أُخذ في المداهمة الفيدرالية", years]
+	chat.rpc(0, msg)
+	_chat_local(0, msg)
+
+
+## المداهمة الأسبوعية: كل لاعبي الخادم (المتصلون وغير المتصلين) يُحكم عليهم ويبدأ موسم جديد
+func federal_raid_all() -> void:
+	var names := {}
+	if _profiles.has_section("players"):
+		for n in _profiles.get_section_keys("players"):
+			names[n] = 0
+	for id in peers:
+		names[peers[id].name] = id
+	_log("FEDERAL RAID: %d players" % names.size())
+	chat.rpc(0, "🏛 المداهمة الفيدرالية! انتهى الموسم")
+	_chat_local(0, "🏛 المداهمة الفيدرالية! انتهى الموسم")
+	for n in names:
+		var id: int = names[n]
+		if id == 0 and _wealth_of(_profiles.get_value("players", n, {})) <= 0 and _profiles.get_value("players", n, {}).is_empty():
+			continue
+		_sentence(n, "federal_raid", id)
+	heist_cd = {}
+	season_start = int(Time.get_unix_time_from_system())
+	_profiles.set_value("server", "season_start", season_start)
+	_profiles.save(PROFILE_PATH)
+
+
+@rpc("authority", "reliable")
+func fed_sentenced(years: int, value: int, perm: Dictionary, reason: String, new_rewards: Array) -> void:
+	_log("sentenced %d years (total %d)" % [years, int(perm.jail_years)])
+	_apply_perm(perm)
+	game.on_net_sentenced(years, value, int(perm.jail_years), reason, new_rewards)
+
+
+@rpc("authority", "reliable")
+func peer_authority(id: int, auth: int) -> void:
+	if peers.has(id):
+		peers[id].auth = auth
+	if remotes.has(id):
+		remotes[id]._update_tag()
+
+
 # ---------------------------------------------------------------- تغيير الدور
 func request_role(role: String) -> void:
 	if is_server():
@@ -1010,5 +1169,7 @@ func _save_profile(d: Dictionary) -> void:
 
 
 func _store_profile(pname: String, d: Dictionary) -> void:
+	if Time.get_ticks_msec() - int(_sentence_lock.get(pname, -100000)) < 4000:
+		return                                   # حفظ قديم أُرسل قبل أن يصل الحكم إلى العميل
 	_profiles.set_value("players", pname, d)
 	_profiles.save(PROFILE_PATH)

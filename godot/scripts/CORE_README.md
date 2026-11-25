@@ -139,7 +139,10 @@ godot --headless --path godot res://scenes/tests/core_persist.tscn -- --core-per
 ## ما لم يُربط بعد (بصراحة)
 - اللعب الجماعي: مدينة السطو يحسمها الخادم عبر خطافات `HeistCityManager` (`start_hook` / `complete_hook` / `extract_hook`
   ← `net.heist_request` / `heist_done` / `heist_extract`)، والنفوذ يُعلن عند التسجيل ويظهر على اللاعبين.
-  ما زال محلياً: الولاية والاقتصاد (يحفظها الخادم في ملف اللاعب كما كان)، والسجن الفيدرالي (لا يعمل في الجماعي).
+  السجن الفيدرالي والنفوذ في الجماعي يحسمهما الخادم (`net._sentence`, `federal_raid_all`) مستخدماً
+  `PrisonManager.years_for` و`level_for_years` و`rewards_between`؛ الملف الدائم في قسم `permanent` من ملف الخادم،
+  ويُطبَّق محلياً بـ `_apply_perm` ثم `game.on_net_sentenced`.
+  ما زال: الاقتصاد في الجماعي يحفظه الخادم في ملف اللاعب كما كان (ليس عبر طبقة المنطق).
 - سرقات المتاجر القديمة (`crime.gd`: الخزائن، المعرض، مستودع الشرطة…) ما زالت نظامها الخاص بجانب أهداف مدينة السطو.
 
 ## اختبارات إضافية

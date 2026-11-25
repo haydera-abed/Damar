@@ -197,6 +197,8 @@ func _start_dedicated(args: PackedStringArray) -> void:
 		get_tree().quit(1)
 		return
 	_go_online()
+	if _arg(args, "--raid-in") != "":                # للاختبار: المداهمة الأسبوعية بعد N ثانية
+		net.season_start = int(Time.get_unix_time_from_system()) - Balance.WIPE_PERIOD_SEC + int(_arg(args, "--raid-in"))
 	state = "server"
 	hud.visible = false
 	player.visible = false
@@ -229,6 +231,7 @@ func start_join(ip: String, port := Net.PORT) -> void:
 
 ## إيقاف ما لا يناسب اللعب الجماعي: الشرطة الآلية (الشرطة لاعبون حقيقيون)
 func _go_online() -> void:
+	GameState.raids_enabled = false        # في الجماعي المداهمة يحسمها الخادم لكل اللاعبين
 	heist.attach_net()
 	GameState.persistence = false          # في اللعب الجماعي الخادم يحفظ التقدم؛ لا نخلطه بالحفظ الفردي
 	core_owned = false                     # ملف اللاعب من الخادم يُطبَّق كاملاً
@@ -245,6 +248,13 @@ func on_net_joined(profile: Dictionary, note: String) -> void:
 	if not profile.is_empty():
 		_apply_profile(profile)
 		_new_save = false
+	else:
+		# لاعب جديد على هذا الخادم (أو بعد حكم فيدرالي): بداية نظيفة — لا نحمل مال اللعب الفردي إلى الخادم
+		var sid: String = GameState.state.id if GameState.state else GameState.DEFAULT_STATE
+		GameState.wipe_state("new_online")
+		GameState.start_state(sid)
+		_apply_profile({"bank": 0, "cash": 0})
+		_new_save = true
 	_on_start()
 	if net.my_role == "cop":
 		cop.start_duty()
@@ -361,6 +371,19 @@ func _bot_tick(dt: float) -> void:
 			print("BOT tenant: after eviction home=%s alerts=%d" % [land.home, alerts.size()])
 	elif _bot == "heister":
 		_heister_bot(dt)
+	elif _bot == "fed" or _bot == "rich":
+		if _bot_t > 3.0 and _bot_t - dt <= 3.0:
+			print("BOT %s: server perm years=%d authority=%d bank=%d" % [_bot, int(GameState.profile.jail_years), PrisonManager.authority_level(), bank])
+			bank = 2100000
+			save_game()
+		if _bot == "fed" and _bot_t > 4.0 and _bot_t - dt <= 4.0:
+			surrender_feds()
+			net.surrender_feds.call_deferred()
+			close_menu()
+		if _bot_t > 9.0 and _bot_t - dt <= 9.0:
+			print("BOT %s: after years=%d authority=%d bank=%d cash=%d rewards=%s" % [_bot, int(GameState.profile.jail_years), PrisonManager.authority_level(), bank, cash, GameState.profile.rewards])
+		if _bot == "rich" and int(_bot_t) % 10 == 0 and int(_bot_t - dt) % 10 != 0:
+			print("BOT rich: t=%d years=%d bank=%d" % [int(_bot_t), int(GameState.profile.jail_years), bank])
 	elif _bot == "cop":
 		if int(_bot_t / 5.0) != int((_bot_t - dt) / 5.0) and _bot_t > 0.0:
 			var fl := []
@@ -917,6 +940,24 @@ func _on_sentenced(years: int, value: int, total: int, reason: String) -> void:
 		why, Cfg.money(value), years, total, PrisonManager.authority_level()], items)
 
 
+## حكم من الخادم (استسلام أو مداهمة أسبوعية): مسح محلي ثم بداية جديدة في نفس الخادم
+func on_net_sentenced(years: int, value: int, total: int, reason: String, new_rewards: Array) -> void:
+	var sid: String = GameState.state.id if GameState.state else GameState.DEFAULT_STATE
+	GameState.wipe_state(reason)
+	GameState.start_state(sid)
+	gangs.wipe_world()
+	crime.tools["lockpick"] = 3
+	cash = 2000
+	if player.car:
+		_exit_car(true)
+	_respawn()
+	var why := "استسلمت للفيدراليين" if reason == "surrender" else "المداهمة الفيدرالية الأسبوعية"
+	var rw := ("\n👑 مكافآت دائمة جديدة: " + ", ".join(new_rewards)) if not new_rewards.is_empty() else ""
+	hud.open_menu("⛓ السجن الفيدرالي", "%s: الخادم صادر ثروتك (%s) وحكم عليك بـ %d سنة.\nمجموع سنواتك: %d · النفوذ: %d%s\nتبدأ من جديد في هذه المدينة، ونفوذك ظاهر لكل اللاعبين." % [
+		why, Cfg.money(value), years, total, PrisonManager.authority_level(), rw], [{"text": "ابدأ من جديد", "enabled": true, "cb": close_menu}])
+	save_game()
+
+
 func _escape_to(state_id: String) -> void:
 	PrisonManager.escape(state_id)
 	GameState.raids_enabled = gangs.season_mode
@@ -929,9 +970,14 @@ func _escape_to(state_id: String) -> void:
 
 
 func surrender_feds() -> void:
-	hud.open_menu("الاستسلام للفيدراليين", "ستُصادر كل ثروتك وممتلكاتك في هذه الولاية وتتحول إلى سنوات سجن (سنة + سنة لكل $250,000، حتى 40).
-السنوات ترفع نفوذك الدائم وتفتح مكافآت وشحنات حصرية.", [
-		{"text": "⛓ نعم، أستسلم", "enabled": not net.is_online(), "cb": func() -> void: PrisonManager.surrender_to_feds()},
+	var note := "\nفي اللعب الجماعي يحسب الخادم ثروتك من آخر ما حفظه." if net.is_online() else ""
+	hud.open_menu("الاستسلام للفيدراليين", "ستُصادر كل ثروتك وممتلكاتك في هذه الولاية وتتحول إلى سنوات سجن (سنة + سنة لكل $250,000، حتى 40).\nالسنوات ترفع نفوذك الدائم وتفتح مكافآت وشحنات حصرية." + note, [
+		{"text": "⛓ نعم، أستسلم", "enabled": true, "cb": func() -> void:
+			if net.is_online():
+				save_game()
+				net.surrender_feds.call_deferred()
+			else:
+				PrisonManager.surrender_to_feds()},
 		{"text": "تراجع", "enabled": true, "cb": close_menu}])
 
 

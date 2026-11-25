@@ -23,12 +23,24 @@ func _ready() -> void:
 
 
 func authority_level() -> int:
-	var years := int(GameState.profile.jail_years)
+	return level_for_years(int(GameState.profile.jail_years))
+
+
+## مستوى النفوذ لعدد سنوات (يستخدمه الخادم أيضاً)
+static func level_for_years(years: int) -> int:
 	var lvl := 0
 	for i in Balance.AUTHORITY_THRESHOLDS.size():
 		if years >= Balance.AUTHORITY_THRESHOLDS[i]:
 			lvl = i
 	return lvl
+
+
+## المكافآت الدائمة التي تُفتح بالانتقال من مستوى إلى آخر
+static func rewards_between(before: int, after: int) -> Array:
+	var out := []
+	for lvl in range(before + 1, after + 1):
+		out.append_array(Balance.AUTHORITY_REWARDS.get(lvl, []))
+	return out
 
 
 func years_for(value: int) -> int:
