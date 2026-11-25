@@ -442,7 +442,7 @@ func remote_cops_near(p: Vector3, r: float) -> bool:
 
 ## روبوتات اختبار اللعب الجماعي (--bot=criminal أو --bot=cop)
 func _bot_tick(dt: float) -> void:
-	if _bot == "" or state != "play":
+	if _bot == "" or _bot == "showcase" or state != "play":
 		return
 	_bot_t += dt
 	if _bot == "criminal":
@@ -494,8 +494,6 @@ func _bot_tick(dt: float) -> void:
 		_econ_bot(dt)
 	elif _bot == "shop":
 		_shop_bot(dt)
-	elif _bot == "showcase":
-		_showcase_bot(dt)
 	elif _bot == "fed" or _bot == "rich":
 		if _bot_t > 3.0 and _bot_t - dt <= 3.0:
 			print("BOT %s: server perm years=%d authority=%d bank=%d" % [_bot, int(GameState.profile.jail_years), PrisonManager.authority_level(), bank])
@@ -1610,6 +1608,9 @@ func _process(dt: float) -> void:
 		sfx.horn()
 
 	_bag_diff_tick(dt)
+	if _bot == "showcase" and (state == "play" or state == "ui"):   # يعمل والقوائم مفتوحة (للّقطات)
+		_bot_t += dt
+		_showcase_bot(dt)
 	if state == "busted" and jail_t > 0.0:
 		jail_t = maxf(0.0, jail_t - dt)
 		hud.update_jail(jail_t, bank)
